@@ -1,6 +1,5 @@
 mod protocol;
 
-use itertools::join;
 use parking_lot::Mutex;
 use rand::prelude::*;
 use std::{
@@ -11,8 +10,8 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
-use tokio::{join, net::UdpSocket};
-use tracing::info;
+use tokio::net::UdpSocket;
+use tracing::{info, trace};
 
 use crate::protocol::*;
 
@@ -77,6 +76,8 @@ impl Server {
             //      week.
             let packet = Packet::from_bytes(bytes)?;
 
+            trace!(?packet, ?origin, ?bytes, "Received query packet");
+
             self.process_request(packet, origin).await?;
         }
     }
@@ -89,13 +90,24 @@ impl Server {
 
             let packet = Packet::from_bytes(bytes)?;
 
+            trace!(?packet, ?origin, ?bytes, "Received response packet");
+
             self.process_response(packet, origin).await?;
         }
     }
 
     async fn process_response(&self, response: Packet, origin: SocketAddr) -> io::Result<()> {
-        info!(?response, ?origin, "Process");
         assert!(response.query_response());
+
+        for answer in response.answers() {
+            info!(
+                "Answer {} {} {:?} from {}",
+                answer.name(),
+                answer.ttl(),
+                answer.rtype(),
+                origin.ip()
+            );
+        }
 
         // https://datatracker.ietf.org/doc/html/rfc1035#section-7.3
         // The next step is to match the response to a current resolver request.
@@ -155,8 +167,20 @@ impl Server {
     }
 
     async fn process_request(&self, request: Packet, origin: SocketAddr) -> io::Result<()> {
-        info!(?request, ?origin, "Process");
         assert!(!request.query_response());
+
+        let questions = request.questions();
+
+        assert_eq!(questions.len(), 1);
+
+        let question = &questions[0];
+
+        info!(
+            "Query {} {:?} from {}",
+            question.name,
+            question.qtype,
+            origin.ip()
+        );
 
         // TODO a proper implementation
         let mut rng = rand::thread_rng();
@@ -185,14 +209,14 @@ impl Server {
 
     async fn send_query(&self, packet: &Packet, target: SocketAddr) -> io::Result<()> {
         let bytes = packet.to_bytes()?;
-        info!(?packet, ?target, ?bytes, "Send query");
+        trace!(?packet, ?target, ?bytes, "Send query");
         self.upstream_socket.send_to(&bytes, target).await?;
         Ok(())
     }
 
     async fn send_response(&self, packet: &Packet, target: SocketAddr) -> io::Result<()> {
         let bytes = packet.to_bytes()?;
-        info!(?packet, ?target, ?bytes, "Send response");
+        trace!(?packet, ?target, ?bytes, "Send response");
         self.listen_socket.send_to(&bytes, target).await?;
         Ok(())
     }

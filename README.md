@@ -15,3 +15,9 @@ cargo run
 ```
 dig @127.0.0.1 -p 8080 +noedns google.com
 ```
+
+## Notes
+
+Written to follow RFC 1035: https://datatracker.ietf.org/doc/html/rfc1035
+
+Inspired by https://github.com/EmilHernvall/dnsguide

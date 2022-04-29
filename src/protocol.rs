@@ -4,6 +4,7 @@ use enum_primitive_derive::Primitive;
 use modular_bitfield::{bitfield, prelude::*};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
+    fmt::Display,
     io::{self, Cursor, Read},
     net::Ipv4Addr,
 };
@@ -280,6 +281,14 @@ impl Packet {
     pub fn set_recursion_desired(&mut self, value: bool) {
         self.header.recursion_desired = value;
     }
+
+    pub fn questions(&self) -> &[Question] {
+        &self.questions
+    }
+
+    pub fn answers(&self) -> &[Record] {
+        &self.answers
+    }
 }
 
 #[derive(BitfieldSpecifier)]
@@ -507,9 +516,9 @@ pub enum QuestionType {
 */
 #[derive(Clone, Debug, PartialEq)]
 pub struct Question {
-    name: String,
-    qtype: QuestionType,
-    class: u16,
+    pub name: String,
+    pub qtype: QuestionType,
+    pub class: u16,
 }
 
 impl Question {
@@ -621,22 +630,35 @@ impl Record {
     pub fn write_to<B: BufMut>(&self, buf: &mut B) -> io::Result<()> {
         match self {
             Record::A { name, ttl, address } => {
-                let rtype = QuestionType::A.to_u16().unwrap();
+                let rtype = QuestionType::A;
                 let class = 1u16; // TODO
                 let rdata = address.octets();
 
-                // TODO compress name
-                write_name(name, buf);
-
-                buf.put_u16(rtype);
-                buf.put_u16(class);
-                buf.put_u32(*ttl);
-                buf.put_u16(rdata.len().try_into().unwrap());
-                buf.put_slice(&rdata[..]);
+                Record::write_with_rdata(buf, name, rtype, class, *ttl, &rdata[..])
             }
             _ => todo!(),
-        };
-        Ok(())
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Record::A { name, .. } => name,
+            _ => todo!(),
+        }
+    }
+
+    pub fn rtype(&self) -> QuestionType {
+        match self {
+            Record::A { .. } => QuestionType::A,
+            _ => todo!(),
+        }
+    }
+
+    pub fn ttl(&self) -> u32 {
+        match self {
+            Record::A { ttl, .. } => *ttl,
+            _ => todo!(),
+        }
     }
 
     fn parse_a(name: String, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
@@ -648,6 +670,29 @@ impl Record {
     fn parse_cname(name: String, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
         let cname = String::from(std::str::from_utf8(bytes).unwrap());
         Ok(Record::CNAME { name, ttl, cname })
+    }
+
+    fn write_with_rdata<B: BufMut>(
+        buf: &mut B,
+        name: &str,
+        rtype: QuestionType,
+        class: u16,
+        ttl: u32,
+        rdata: &[u8],
+    ) -> io::Result<()> {
+        let rtype = rtype.to_u16().unwrap();
+        let rdlength = rdata.len().try_into().unwrap();
+
+        // TODO compress name
+        write_name(name, buf);
+
+        buf.put_u16(rtype);
+        buf.put_u16(class);
+        buf.put_u32(ttl);
+        buf.put_u16(rdlength);
+        buf.put_slice(&rdata[..]);
+
+        Ok(())
     }
 }
 
