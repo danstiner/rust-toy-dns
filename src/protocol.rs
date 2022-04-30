@@ -262,6 +262,10 @@ impl Packet {
         self.header.query_response
     }
 
+    pub fn response_code(&self) -> ResponseCode {
+        self.header.response_code
+    }
+
     pub fn authoritative_answer(&self) -> bool {
         self.header.authoritative_answer
     }
@@ -286,9 +290,24 @@ impl Packet {
         &self.questions
     }
 
+    pub fn add_question(&mut self, name: &str, qtype: QuestionType, qclass: QuestionClass) {
+        self.header.question_count += 1;
+        self.questions.push(Question {
+            name: name.to_owned(),
+            qtype,
+            qclass,
+        })
+    }
+
     pub fn answers(&self) -> &[Record] {
         &self.answers
     }
+
+    pub fn add_answer(&mut self, answer: Record) {
+        self.header.answer_count += 1;
+        self.answers.push(answer);
+    }
+
 }
 
 #[derive(BitfieldSpecifier)]
@@ -473,7 +492,7 @@ pub enum OpCode {
 }
 
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.3
-#[derive(Clone, Debug, Primitive, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq)]
 pub enum QuestionType {
     A = 1,      // host address
     NS = 2,     // authoritative name server
@@ -500,6 +519,16 @@ pub enum QuestionType {
     ALL = 255,   // aka "*", request for all records
 }
 
+// https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.4
+#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq)]
+pub enum QuestionClass {
+    UNKNOWN0 = 0,
+    IN = 1, // the Internet
+    CS = 2, // the CSNET class (Obsolete - used only for examples in some obsolete RFCs)
+    CH = 3, // the CHAOS class
+    HS = 4, // Hesiod [Dyer 87]
+}
+
 /* Question section
 
                                 1  1  1  1  1  1
@@ -518,7 +547,7 @@ pub enum QuestionType {
 pub struct Question {
     pub name: String,
     pub qtype: QuestionType,
-    pub class: u16,
+    pub qclass: QuestionClass,
 }
 
 impl Question {
@@ -532,23 +561,29 @@ impl Question {
         padding is used. */
         let name = CompressedDomain::read_from(cursor)?;
         let qtype = cursor.read_u16::<NetworkEndian>()?;
-        let class = cursor.read_u16::<NetworkEndian>()?;
+        let qclass = cursor.read_u16::<NetworkEndian>()?;
 
         let name = name.uncompress(&cursor)?;
         let qtype = QuestionType::from_u16(qtype)
             .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
+        let qclass = QuestionClass::from_u16(qclass)
+            .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
 
-        Ok(Question { name, qtype, class })
+        Ok(Question {
+            name,
+            qtype,
+            qclass,
+        })
     }
 
     pub fn write_to<B: BufMut>(&self, buf: &mut B) -> io::Result<()> {
         let qtype = self.qtype.to_u16().unwrap();
-        let class = self.class;
+        let qclass = self.qclass.to_u16().unwrap();
 
         // TODO compress name
         write_name(&self.name, buf);
         buf.put_u16(qtype);
-        buf.put_u16(class);
+        buf.put_u16(qclass);
         Ok(())
     }
 }
@@ -888,7 +923,7 @@ mod tests {
             vec![Question {
                 name: String::from("google.com"),
                 qtype: QuestionType::A,
-                class: 1,
+                qclass: QuestionClass::IN,
             }]
         );
     }
@@ -991,7 +1026,7 @@ mod tests {
             vec![Question {
                 name: String::from("google.com"),
                 qtype: QuestionType::A,
-                class: 1,
+                qclass: QuestionClass::IN,
             }]
         );
 
@@ -1126,6 +1161,18 @@ mod properties {
         }
     }
 
+    impl Arbitrary for QuestionClass {
+        fn arbitrary(g: &mut Gen) -> Self {
+            match gen_range_u16(g, 1, 5) {
+                1 => QuestionClass::IN,
+                2 => QuestionClass::CS,
+                3 => QuestionClass::CH,
+                4 => QuestionClass::HS,
+                _ => unreachable!(),
+            }
+        }
+    }
+
     impl Arbitrary for ResponseCode {
         fn arbitrary(g: &mut Gen) -> ResponseCode {
             match gen_range(g, 0, 6) {
@@ -1182,7 +1229,7 @@ mod properties {
             Question {
                 name: arbitrary_name(g),
                 qtype: QuestionType::arbitrary(g),
-                class: gen_range_u16(g, 1, 5),
+                qclass: QuestionClass::arbitrary(g),
             }
         }
     }

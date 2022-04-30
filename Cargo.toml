@@ -6,17 +6,18 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-trait = "0.1"
 byteorder = "1"
 bytes = "1.1"
 enum-primitive-derive = "0.2"
 itertools = "0.10"
+modular-bitfield = "0.11"
 num-traits = "0.2"
 parking_lot = "0.12"
+rand = "0.8"
 tokio = { version = "1.17.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-rand = "0.8"
-modular-bitfield = "0.11"
 
 [dev-dependencies]
 quickcheck = "1"
