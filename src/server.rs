@@ -17,7 +17,7 @@ where
     }
 
     pub async fn run(&self) -> io::Result<()> {
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; MAX_PACKET_SIZE];
         loop {
             let (size, origin) = self.0.socket.recv_from(&mut buf).await?;
             let bytes = &buf[0..size];
@@ -59,7 +59,7 @@ where
 
             info!(
                 "Query {} {:?} from {}",
-                question.name,
+                question.domain,
                 question.qtype,
                 origin.ip()
             );
@@ -69,13 +69,13 @@ where
 
         let query = self
             .resolver
-            .query(&question.name, question.qtype, question.qclass);
+            .query(&question.domain, question.qtype, question.qclass);
         let query = timeout(QUERY_TIMEOUT, query);
         let response: Response = query.await.unwrap().unwrap();
 
         let mut packet = Packet::new();
         packet.set_id(request.id());
-        packet.add_question(&question.name, question.qtype, question.qclass);
+        packet.add_question(question);
         for answer in response.answers {
             info!(
                 "Answer {} {} {:?} from {}",

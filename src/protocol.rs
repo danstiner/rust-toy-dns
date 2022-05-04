@@ -4,16 +4,16 @@ use enum_primitive_derive::Primitive;
 use modular_bitfield::{bitfield, prelude::*};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
-    fmt::Display,
     io::{self, Cursor, Read},
     net::Ipv4Addr,
 };
-use tracing::{info, trace};
+use tracing::trace;
+
+pub const MAX_PACKET_SIZE: usize = 512;
 
 pub type ID = u16;
 
 /*
-
 https://datatracker.ietf.org/doc/html/rfc1035#section-3.1
 
 3.1. Name space definitions
@@ -305,13 +305,9 @@ impl Packet {
         &self.questions
     }
 
-    pub fn add_question(&mut self, name: &str, qtype: QuestionType, qclass: QuestionClass) {
+    pub fn add_question(&mut self, question: Question) {
         self.header.question_count += 1;
-        self.questions.push(Question {
-            name: name.to_owned(),
-            qtype,
-            qclass,
-        })
+        self.questions.push(question);
     }
 
     pub fn answers(&self) -> &[Record] {
@@ -322,7 +318,6 @@ impl Packet {
         self.header.answer_count += 1;
         self.answers.push(answer);
     }
-
 }
 
 #[derive(BitfieldSpecifier)]
@@ -560,7 +555,7 @@ pub enum QuestionClass {
 */
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Question {
-    pub name: String,
+    pub domain: String,
     pub qtype: QuestionType,
     pub qclass: QuestionClass,
 }
@@ -574,18 +569,18 @@ impl Question {
         zero length octet for the null label of the root.  Note
         that this field may be an odd number of octets; no
         padding is used. */
-        let name = CompressedDomain::read_from(cursor)?;
+        let domain = CompressedDomain::read_from(cursor)?;
         let qtype = cursor.read_u16::<NetworkEndian>()?;
         let qclass = cursor.read_u16::<NetworkEndian>()?;
 
-        let name = name.uncompress(&cursor)?;
+        let name = domain.uncompress(&cursor)?;
         let qtype = QuestionType::from_u16(qtype)
             .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
         let qclass = QuestionClass::from_u16(qclass)
             .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
 
         Ok(Question {
-            name,
+            domain: name,
             qtype,
             qclass,
         })
@@ -596,7 +591,7 @@ impl Question {
         let qclass = self.qclass.to_u16().unwrap();
 
         // TODO compress name
-        write_name(&self.name, buf);
+        write_name(&self.domain, buf);
         buf.put_u16(qtype);
         buf.put_u16(qclass);
         Ok(())
@@ -936,7 +931,7 @@ mod tests {
         assert_eq!(
             packet.questions,
             vec![Question {
-                name: String::from("google.com"),
+                domain: String::from("google.com"),
                 qtype: QuestionType::A,
                 qclass: QuestionClass::IN,
             }]
@@ -1039,7 +1034,7 @@ mod tests {
         assert_eq!(
             packet.questions,
             vec![Question {
-                name: String::from("google.com"),
+                domain: String::from("google.com"),
                 qtype: QuestionType::A,
                 qclass: QuestionClass::IN,
             }]
@@ -1242,7 +1237,7 @@ mod properties {
     impl Arbitrary for Question {
         fn arbitrary(g: &mut Gen) -> Question {
             Question {
-                name: arbitrary_name(g),
+                domain: arbitrary_name(g),
                 qtype: QuestionType::arbitrary(g),
                 qclass: QuestionClass::arbitrary(g),
             }
