@@ -2,7 +2,7 @@ pub mod stub;
 
 use crate::protocol::{QuestionClass, QuestionType, Record};
 use async_trait::async_trait;
-use std::io;
+use std::{io, net::SocketAddr};
 
 /// A resolver takes queries and answers them. This can take many forms
 /// from proxing requests to a remote recursive server to reading a fixed
@@ -34,5 +34,11 @@ pub trait Resolver {
         domain: &str,
         qtype: QuestionType,
         qclass: QuestionClass,
-    ) -> io::Result<Vec<Record>>;
+    ) -> io::Result<Response>;
+}
+
+#[derive(Debug)]
+pub struct Response {
+    pub answers: Vec<Record>,
+    pub origin: SocketAddr,
 }

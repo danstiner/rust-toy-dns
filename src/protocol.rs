@@ -214,6 +214,21 @@ impl Packet {
         }
     }
 
+    // https://datatracker.ietf.org/doc/html/rfc1035#section-7.3
+    // The first step in processing arriving response datagrams is to parse the
+    // response.  This procedure should include:
+    //
+    //    - Check the header for reasonableness.  Discard datagrams which
+    //      are queries when responses are expected.
+    //
+    //    - Parse the sections of the message, and insure that all RRs are
+    //      correctly formatted.
+    //
+    //    - As an optional step, check the TTLs of arriving data looking
+    //      for RRs with excessively long TTLs.  If a RR has an
+    //      excessively long TTL, say greater than 1 week, either discard
+    //      the whole response, or limit all TTLs in the response to 1
+    //      week.
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Packet> {
         let mut cursor = Cursor::new(bytes);
 
@@ -492,7 +507,7 @@ pub enum OpCode {
 }
 
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.3
-#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq, Hash)]
 pub enum QuestionType {
     A = 1,      // host address
     NS = 2,     // authoritative name server
@@ -520,7 +535,7 @@ pub enum QuestionType {
 }
 
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.4
-#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq, Hash)]
 pub enum QuestionClass {
     UNKNOWN0 = 0,
     IN = 1, // the Internet
@@ -543,7 +558,7 @@ pub enum QuestionClass {
 |                     QCLASS                    |
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Question {
     pub name: String,
     pub qtype: QuestionType,

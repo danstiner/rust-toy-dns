@@ -1,5 +1,5 @@
 use crate::{
-    protocol::{Packet, QuestionClass, QuestionType, Record, ResponseCode, ID},
+    protocol::{Packet, Question, QuestionClass, QuestionType, ResponseCode, ID},
     resolver::Resolver,
 };
 use async_trait::async_trait;
@@ -8,23 +8,24 @@ use rand::prelude::*;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use std::{io, net::ToSocketAddrs};
 use tokio::{net::UdpSocket, sync::oneshot};
-use tracing::{info, trace};
+use tracing::trace;
 
-pub struct ForwardingResolver {
+use super::Response;
+
+pub struct StubResolver {
     db: Arc<Mutex<Db>>,
-    socket: UdpSocket,
     target: SocketAddr,
 }
 
-struct OutstandingQuery {
-    domain: String,
-    qtype: QuestionType,
-    qclass: QuestionClass,
-    response_channel: tokio::sync::oneshot::Sender<Packet>,
+#[derive(Eq, Hash, PartialEq)]
+struct QueryKey {
+    request_id: ID,
+    question: Question,
 }
 
+// TODO clear out old expired entries
 struct Db {
-    outstanding_queries: HashMap<ID, Vec<OutstandingQuery>>,
+    outstanding_queries: HashMap<QueryKey, Vec<oneshot::Sender<Response>>>,
 }
 
 impl Db {
@@ -33,45 +34,73 @@ impl Db {
             outstanding_queries: HashMap::new(),
         }
     }
+
+    fn add_query(&mut self, request_id: ID, question: Question) -> oneshot::Receiver<Response> {
+        let key = QueryKey {
+            request_id,
+            question,
+        };
+
+        // Setup a channel to return the response on
+        let (sender, receiver) = oneshot::channel();
+
+        self.outstanding_queries
+            .entry(key)
+            .or_insert_with(|| Vec::new())
+            .push(sender);
+
+        receiver
+    }
 }
 
-impl ForwardingResolver {
-    pub fn new<A: ToSocketAddrs>(socket: UdpSocket, target: A) -> io::Result<ForwardingResolver> {
+impl StubResolver {
+    pub fn new<A: ToSocketAddrs>(target: A) -> io::Result<StubResolver> {
         let target = target.to_socket_addrs()?.next().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "no addresses to send data to")
         })?;
 
-        Ok(ForwardingResolver {
+        Ok(StubResolver {
             db: Arc::new(Mutex::new(Db::new())),
-            socket,
             target,
         })
     }
 
-    async fn send_query(&self, packet: &Packet) -> io::Result<()> {
-        let bytes = packet.to_bytes()?;
-        trace!(?packet, ?bytes,  ?self.target,"Sending query");
-        self.socket.send_to(&bytes, self.target).await?;
+    async fn query_remote(&self, packet: &Packet) -> io::Result<()> {
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        self.send_query(packet, &socket).await?;
+        self.receive_response(&socket).await?;
         Ok(())
     }
 
-    pub async fn run(&self) -> io::Result<()> {
+    async fn send_query(&self, packet: &Packet, socket: &UdpSocket) -> io::Result<()> {
+        let bytes = packet.to_bytes()?;
+        trace!(?packet, ?bytes, ?self.target, "Sending query");
+        socket.send_to(&bytes, self.target).await?;
+        Ok(())
+    }
+
+    pub async fn receive_response(&self, socket: &UdpSocket) -> io::Result<()> {
+        socket.connect(self.target).await?;
+
         let mut buf = [0u8; 512];
         loop {
-            let (size, origin) = self.socket.recv_from(&mut buf).await?;
+            let (size, origin) = socket.recv_from(&mut buf).await?;
             let bytes = &buf[0..size];
 
             let packet = Packet::from_bytes(bytes)?;
 
             trace!(?packet, ?bytes, ?origin, "Received response packet");
 
-            self.process_response(packet, origin).await?;
+            if self.handle_response(packet, origin).await? {
+                // Received the expected response, stop listening
+                return Ok(());
+            }
         }
     }
 
-    async fn process_response(&self, response: Packet, origin: SocketAddr) -> io::Result<()> {
-        assert!(response.query_response());
-        assert_eq!(response.response_code(), ResponseCode::NoErrorCondition);
+    async fn handle_response(&self, packet: Packet, origin: SocketAddr) -> io::Result<bool> {
+        assert!(packet.query_response());
+        assert_eq!(packet.response_code(), ResponseCode::NoErrorCondition);
 
         // https://datatracker.ietf.org/doc/html/rfc1035#section-7.3
         // The next step is to match the response to a current resolver request.
@@ -109,58 +138,57 @@ impl ForwardingResolver {
         // parallel requests to acquire the addresses of the servers when the
         // resolver has the name, but no addresses, for the name servers.
 
-        // TODO some amount of verification of the origin address
+        let question = {
+            let questions = packet.questions();
+
+            assert_eq!(questions.len(), 1);
+
+            questions[0].clone()
+        };
 
         let mut db = self.db.lock();
 
-        if let Some(outstanding_queries) = db.outstanding_queries.get_mut(&response.id()) {
-            let outstanding = outstanding_queries.pop().unwrap();
+        let entry = db.outstanding_queries.remove_entry(&QueryKey {
+            request_id: packet.id(),
+            question,
+        });
 
-            outstanding.response_channel.send(response).unwrap();
-
-            // TODO loop to find and extract matching outstanding queries
-            // for outstanding in outstanding_queries.iter() {
-            //     // else log that we've ignored this unsolicited response
-            // }
-            // Clear matching queries from oustanding set, we've answered them
-            // TODO remove entry if ID's entry is entirely empty now
+        if let Some((_key, response_channels)) = entry {
+            for channel in response_channels {
+                channel
+                    .send(Response {
+                        answers: packet.answers().to_vec(),
+                        origin,
+                    })
+                    .unwrap();
+            }
+            Ok(true)
+        } else {
+            Ok(false)
         }
-
-        Ok(())
     }
 }
 
 #[async_trait]
-impl Resolver for ForwardingResolver {
+impl Resolver for Arc<StubResolver> {
     async fn query(
         &self,
         domain: &str,
         qtype: QuestionType,
         qclass: QuestionClass,
-    ) -> io::Result<Vec<Record>> {
+    ) -> io::Result<Response> {
         // Generate an id for this request
-        let request_id: ID = {
-            let mut rng = rand::thread_rng();
-            rng.gen()
-        };
+        let request_id: ID = rand::thread_rng().gen();
 
         // Record as an outstanding query
         let receiver = {
-            let mut db = self.db.lock();
+            let question = Question {
+                name: domain.to_owned(),
+                qtype,
+                qclass,
+            };
 
-            let (sender, receiver) = oneshot::channel::<Packet>();
-
-            db.outstanding_queries
-                .entry(request_id)
-                .or_insert_with(|| Vec::new())
-                .push(OutstandingQuery {
-                    domain: domain.to_owned(),
-                    qtype,
-                    qclass,
-                    response_channel: sender,
-                });
-
-            receiver
+            self.db.lock().add_query(request_id, question)
         };
 
         // Send request packet
@@ -168,10 +196,8 @@ impl Resolver for ForwardingResolver {
         request.set_id(request_id);
         request.add_question(domain, qtype, qclass);
         request.set_recursion_desired(true);
-        self.send_query(&request).await?;
+        self.query_remote(&request).await?;
 
-        // Wait for response
-        let response = receiver.await.unwrap();
-        Ok(response.answers().to_vec())
+        Ok(receiver.await.unwrap())
     }
 }

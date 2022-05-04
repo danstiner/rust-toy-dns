@@ -24,6 +24,11 @@ dig @127.0.0.1 -p 8080 +noedns google.com
 - [ ] Recursive resolver
 - [ ] Fuzz testing
 - [ ] Benchmarking
+- [ ] Initialize from from resolver.conf etc
+
+## Security
+
+- [X] Implement [source port randomization](https://en.m.wikipedia.org/wiki/Dan_Kaminsky#Flaw_in_DNS)
 
 ## Notes
 

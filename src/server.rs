@@ -1,93 +1,94 @@
-use crate::protocol::*;
 use crate::resolver::Resolver;
-use std::{io, net::SocketAddr, time::Duration};
+use crate::{protocol::*, resolver::Response};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::UdpSocket, time::timeout};
 use tracing::{info, trace};
 
-pub struct Server<R> {
-    socket: UdpSocket,
-    pub resolver: R, // Hack
-}
-
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl<R: Resolver> Server<R> {
+pub struct Server<R>(Arc<Inner<R>>);
+
+impl<R> Server<R>
+where
+    R: Resolver + Send + Sync + 'static,
+{
     pub fn new(socket: UdpSocket, resolver: R) -> Server<R> {
-        Server { socket, resolver }
+        Server(Arc::new(Inner { socket, resolver }))
     }
 
-    pub async fn run2(&self) -> io::Result<()> {
+    pub async fn run(&self) -> io::Result<()> {
         let mut buf = [0u8; 512];
         loop {
-            let (size, origin) = self.socket.recv_from(&mut buf).await?;
+            let (size, origin) = self.0.socket.recv_from(&mut buf).await?;
             let bytes = &buf[0..size];
 
-            // https://datatracker.ietf.org/doc/html/rfc1035#section-7.3
-            // The first step in processing arriving response datagrams is to parse the
-            // response.  This procedure should include:
-            //
-            //    - Check the header for reasonableness.  Discard datagrams which
-            //      are queries when responses are expected.
-            //
-            //    - Parse the sections of the message, and insure that all RRs are
-            //      correctly formatted.
-            //
-            //    - As an optional step, check the TTLs of arriving data looking
-            //      for RRs with excessively long TTLs.  If a RR has an
-            //      excessively long TTL, say greater than 1 week, either discard
-            //      the whole response, or limit all TTLs in the response to 1
-            //      week.
-            let packet = Packet::from_bytes(bytes)?;
-
-            trace!(?packet, ?origin, ?bytes, "Received query packet");
-
-            self.process_request(packet, origin).await?;
+            match Packet::from_bytes(bytes) {
+                Ok(packet) => self.handle_request(packet, origin),
+                Err(err) => info!(?err, "Error parsing packet"),
+            }
         }
     }
-    async fn process_request(&self, request: Packet, origin: SocketAddr) -> io::Result<()> {
-        assert_eq!(request.query_response(), false);
 
-        let questions = request.questions();
+    fn handle_request(&self, packet: Packet, origin: SocketAddr) {
+        trace!(?packet, ?origin, "Received query packet");
 
-        assert_eq!(questions.len(), 1);
+        let inner = Arc::clone(&self.0);
 
-        let question = &questions[0];
+        tokio::spawn(async move {
+            inner.handle_request(packet, origin).await;
+        });
+    }
+}
 
-        info!(
-            "Query {} {:?} from {}",
-            question.name,
-            question.qtype,
-            origin.ip()
-        );
+struct Inner<R> {
+    socket: UdpSocket,
+    resolver: R,
+}
+
+impl<R> Inner<R>
+where
+    R: Resolver,
+{
+    async fn handle_request(self: Arc<Self>, request: Packet, origin: SocketAddr) {
+        let question = {
+            let questions = request.questions();
+
+            assert_eq!(questions.len(), 1);
+
+            let question = &questions[0];
+
+            info!(
+                "Query {} {:?} from {}",
+                question.name,
+                question.qtype,
+                origin.ip()
+            );
+
+            question.clone()
+        };
 
         let query = self
             .resolver
             .query(&question.name, question.qtype, question.qclass);
-        let answers = timeout(QUERY_TIMEOUT, query).await??;
+        let query = timeout(QUERY_TIMEOUT, query);
+        let response: Response = query.await.unwrap().unwrap();
 
-        let mut response = Packet::new();
-        response.set_id(request.id());
-        response.add_question(&question.name, question.qtype, question.qclass);
-        for answer in answers {
+        let mut packet = Packet::new();
+        packet.set_id(request.id());
+        packet.add_question(&question.name, question.qtype, question.qclass);
+        for answer in response.answers {
             info!(
-                "Answer {} {} {:?} for {}",
+                "Answer {} {} {:?} from {}",
                 answer.name(),
                 answer.ttl(),
                 answer.rtype(),
-                origin.ip()
+                response.origin.ip()
             );
-            response.add_answer(answer);
+            packet.add_answer(answer);
         }
 
-        self.send_response(&response, origin).await?;
-
-        Ok(())
-    }
-
-    async fn send_response(&self, packet: &Packet, target: SocketAddr) -> io::Result<()> {
-        let bytes = packet.to_bytes()?;
-        trace!(?packet, ?target, ?bytes, "Send response");
-        self.socket.send_to(&bytes, target).await?;
-        Ok(())
+        let bytes = packet.to_bytes().unwrap();
+        trace!(?packet, ?origin, ?bytes, "Send response");
+        self.socket.send_to(&bytes, origin).await.unwrap();
     }
 }

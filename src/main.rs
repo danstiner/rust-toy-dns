@@ -2,9 +2,9 @@ mod protocol;
 mod resolver;
 mod server;
 
-use resolver::stub::ForwardingResolver;
+use resolver::stub::StubResolver;
 use server::Server;
-use std::{env, error::Error};
+use std::{env, error::Error, sync::Arc};
 use tokio::net::UdpSocket;
 
 #[tokio::main]
@@ -17,15 +17,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
 
     let socket = UdpSocket::bind(&listen_addr).await?;
-    let resolver_socket = UdpSocket::bind("0.0.0.0:0").await?;
-    let resolver = ForwardingResolver::new(resolver_socket, "1.1.1.1:53")?;
+    let resolver = Arc::new(StubResolver::new("1.1.1.1:53")?);
 
-    let server = Server::new(socket, resolver);
-
-    // TODO hack, should await server/resolver directly
-    let (s, r) = tokio::join!(server.run2(), server.resolver.run());
-    s?;
-    r?;
+    Server::new(socket, resolver).run().await?;
 
     Ok(())
 }
