@@ -1,4 +1,4 @@
-use crate::{protocol::*, resolver::Resolver};
+use crate::{protocol::*, resolver::*};
 use async_trait::async_trait;
 use rand::prelude::*;
 use std::{io, net::ToSocketAddrs};
@@ -6,36 +6,28 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::UdpSocket;
 use tracing::trace;
 
-use super::Response;
-
 pub struct StubResolver<P> {
-    socket_provider: P,
+    factory: P,
 }
 
-#[derive(Eq, Hash, PartialEq)]
-struct QueryKey {
-    request_id: ID,
-    question: Question,
-}
-
-impl StubResolver<UdpProvider> {
-    pub fn new<A: ToSocketAddrs>(target: A) -> io::Result<StubResolver<UdpProvider>> {
+impl StubResolver<UdpConnectionFactory> {
+    pub fn new<A: ToSocketAddrs>(target: A) -> io::Result<StubResolver<UdpConnectionFactory>> {
         let target = target.to_socket_addrs()?.next().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "no addresses to send data to")
         })?;
 
         Ok(StubResolver {
-            socket_provider: UdpProvider { target },
+            factory: UdpConnectionFactory { target },
         })
     }
 }
 
 impl<P> StubResolver<P>
 where
-    P: SocketProvider,
-    <P as SocketProvider>::S: Sender,
+    P: ConnectionFactory,
+    <P as ConnectionFactory>::C: Connection,
 {
-    async fn send_query(&self, packet: &Packet, socket: &P::S) -> io::Result<()> {
+    async fn send_query(&self, packet: &Packet, socket: &P::C) -> io::Result<()> {
         let bytes = packet.to_bytes()?;
         trace!(?packet, ?bytes, "Sending query");
         socket.send(&bytes).await?;
@@ -44,7 +36,7 @@ where
 
     pub async fn receive_response(
         &self,
-        socket: &P::S,
+        socket: &P::C,
         request_id: ID,
         question: Question,
     ) -> io::Result<Response> {
@@ -116,8 +108,8 @@ where
 #[async_trait]
 impl<P> Resolver for StubResolver<P>
 where
-    P: SocketProvider + Send + Sync,
-    <P as SocketProvider>::S: Sender + Send + Sync,
+    P: ConnectionFactory + Send + Sync,
+    <P as ConnectionFactory>::C: Connection + Send + Sync,
 {
     async fn query(
         &self,
@@ -125,10 +117,10 @@ where
         qtype: QuestionType,
         qclass: QuestionClass,
     ) -> io::Result<Response> {
-        let socket = self.socket_provider.connect().await?;
+        let socket = self.factory.make_connection().await?;
 
         // Generate an id for this request
-        let request_id = socket.request_id();
+        let request_id = socket.gen_request_id();
 
         // Build request
         let question = Question {
@@ -152,8 +144,8 @@ where
 #[async_trait]
 impl<P> Resolver for Arc<StubResolver<P>>
 where
-    P: SocketProvider + Send + Sync,
-    <P as SocketProvider>::S: Sender + Send + Sync,
+    P: ConnectionFactory + Send + Sync,
+    <P as ConnectionFactory>::C: Connection + Send + Sync,
 {
     #[inline]
     async fn query(
@@ -167,16 +159,23 @@ where
 }
 
 #[async_trait]
-pub trait Sender {
-    fn request_id(&self) -> ID;
+pub trait Connection {
+    fn gen_request_id(&self) -> ID;
     async fn send(&self, buf: &[u8]) -> io::Result<usize>;
     async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)>;
 }
 
 #[async_trait]
-impl Sender for UdpSocket {
+pub trait ConnectionFactory {
+    type C;
+
+    async fn make_connection(&self) -> io::Result<Self::C>;
+}
+
+#[async_trait]
+impl Connection for UdpSocket {
     #[inline]
-    fn request_id(&self) -> ID {
+    fn gen_request_id(&self) -> ID {
         rand::thread_rng().gen()
     }
 
@@ -191,21 +190,15 @@ impl Sender for UdpSocket {
     }
 }
 
-#[async_trait]
-pub trait SocketProvider {
-    type S;
-    async fn connect(&self) -> io::Result<Self::S>;
-}
-
-pub struct UdpProvider {
+pub struct UdpConnectionFactory {
     target: SocketAddr,
 }
 
 #[async_trait]
-impl SocketProvider for UdpProvider {
-    type S = UdpSocket;
+impl ConnectionFactory for UdpConnectionFactory {
+    type C = UdpSocket;
 
-    async fn connect(&self) -> io::Result<Self::S> {
+    async fn make_connection(&self) -> io::Result<Self::C> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.connect(self.target).await?;
         Ok(socket)
@@ -226,8 +219,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl Sender for MockConnection {
-        fn request_id(&self) -> ID {
+    impl Connection for MockConnection {
+        fn gen_request_id(&self) -> ID {
             self.request_id
         }
 
@@ -247,19 +240,19 @@ mod tests {
     struct MockProvider(MockConnection);
 
     #[async_trait]
-    impl SocketProvider for MockProvider {
-        type S = MockConnection;
+    impl ConnectionFactory for MockProvider {
+        type C = MockConnection;
 
-        async fn connect(&self) -> io::Result<Self::S> {
+        async fn make_connection(&self) -> io::Result<Self::C> {
             Ok(self.0.clone())
         }
     }
 
     #[tokio::test]
     async fn query() {
-        let receive_addr = "8.8.8.8:53".to_socket_addrs().unwrap().next().unwrap();
+        let remote_addr = "8.8.8.8:53".to_socket_addrs().unwrap().next().unwrap();
         // Captured response from running `dig +noedns google.com`
-        let receive_data: [u8; 124] = [
+        let response_data: [u8; 124] = [
             0x9a, 0x9e, // ID
             0x81, 0x80, // flags = qr rd ra
             0x00, 0x01, // qdcount
@@ -289,12 +282,12 @@ mod tests {
         let sends = Arc::new(Mutex::new(vec![]));
         let connection = MockConnection {
             request_id: 0x9a9e,
-            receive_addr: receive_addr,
-            receive_data: receive_data.to_vec(),
+            receive_addr: remote_addr,
+            receive_data: response_data.to_vec(),
             sends: Arc::clone(&sends),
         };
         let stub = StubResolver {
-            socket_provider: MockProvider(connection),
+            factory: MockProvider(connection),
         };
 
         let response = stub
@@ -304,12 +297,13 @@ mod tests {
 
         assert_eq!(
             sends.lock().to_vec(),
+            // Captured request from running `dig +noedns google.com`
             vec![vec![
                 0x9a, 0x9e, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x06, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65,
                 0x03, 0x63, 0x6f, 0x6d, 0, 0, 1, 0, 1
             ]]
         );
-        assert_eq!(response.origin, receive_addr);
+        assert_eq!(response.origin, remote_addr);
         assert_eq!(
             response.answers,
             vec![
@@ -346,4 +340,6 @@ mod tests {
             ]
         );
     }
+
+    // TODO test receiving unrelated packets, packets more than 512 bytes, etc
 }

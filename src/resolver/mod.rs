@@ -1,3 +1,4 @@
+pub mod caching;
 pub mod stub;
 
 use crate::protocol::{QuestionClass, QuestionType, Record};
@@ -37,7 +38,7 @@ pub trait Resolver {
     ) -> io::Result<Response>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Response {
     pub answers: Vec<Record>,
     pub origin: SocketAddr,

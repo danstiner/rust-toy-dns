@@ -5,7 +5,7 @@ use modular_bitfield::{bitfield, prelude::*};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
     io::{self, Cursor, Read},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr}, time::Duration,
 };
 use tracing::trace;
 
@@ -643,6 +643,19 @@ pub enum Record {
         ttl: u32,
         cname: String,
     },
+    AAAA {
+        name: String,
+        ttl: u32,
+        address: Ipv6Addr,
+    },
+}
+
+fn take_slice<'a>(cursor: &'a mut Cursor<&[u8]>, size: usize) -> &'a [u8] {
+    let start = cursor.position() as usize;
+    let end = start + size;
+    let slice = &cursor.get_ref()[start..end];
+    cursor.set_position(end.try_into().unwrap());
+    slice
 }
 
 impl Record {
@@ -655,15 +668,13 @@ impl Record {
 
         assert!(class == 1);
 
-        let mut buffer = [0u8; 10];
-        cursor.read_exact(&mut buffer[0..rdlength])?;
-        let bytes = &buffer[0..rdlength];
-
         let name = name.uncompress(&cursor)?;
         let rtype = QuestionType::from_u16(rtype)
             .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
 
         // TODO check type is valid for RDATA, not all qtypes are
+        
+        let bytes = take_slice(cursor, rdlength);
 
         match rtype {
             QuestionType::A => Record::parse_a(name, ttl, bytes),
@@ -702,8 +713,14 @@ impl Record {
     pub fn ttl(&self) -> u32 {
         match self {
             Record::A { ttl, .. } => *ttl,
+            Record::CNAME { ttl, .. } => *ttl,
+            Record::NS { ttl, .. } => *ttl,
             _ => todo!(),
         }
+    }
+
+    pub fn ttl_duration(&self) -> Duration {
+        Duration::from_secs(self.ttl().into())
     }
 
     fn parse_a(name: String, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
