@@ -5,7 +5,8 @@ use modular_bitfield::{bitfield, prelude::*};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
     io::{self, Cursor, Read},
-    net::{Ipv4Addr, Ipv6Addr}, time::Duration,
+    net::{Ipv4Addr, Ipv6Addr},
+    time::Duration,
 };
 use tracing::trace;
 
@@ -109,8 +110,8 @@ impl CompressedDomain {
                     domain.pointer = Some(offset);
                     return Ok(domain);
                 }
-                0b1000_0000 => todo!("invalid label"),
-                0b0100_0000 => todo!("invalid label"),
+                0b1000_0000 => todo!("invalid label type 10"),
+                0b0100_0000 => todo!("invalid label type 01"),
                 0b0000_0000 => {
                     // Label where first octect is the label's length
                     let len = octet.into();
@@ -203,6 +204,8 @@ pub struct Packet {
     header: Header,
     questions: Vec<Question>,
     answers: Vec<Record>,
+    authority: Vec<Record>,
+    additional: Vec<Record>,
 }
 
 impl Packet {
@@ -211,6 +214,8 @@ impl Packet {
             header: Header::new(),
             questions: Vec::new(),
             answers: Vec::new(),
+            authority: Vec::new(),
+            additional: Vec::new(),
         }
     }
 
@@ -234,22 +239,22 @@ impl Packet {
 
         let header = Header::read_from(&mut cursor)?;
 
-        // TODO We only support parsing questions and anwsers so far
-        assert!(header.authority_count == 0);
-        assert!(header.additional_count == 0);
-
         let questions = (0..header.question_count)
             .map(|_| Question::read_from(&mut cursor))
             .collect::<io::Result<Vec<Question>>>()?;
 
-        let answers = (0..header.answer_count)
-            .map(|_| Record::read_from(&mut cursor))
-            .collect::<io::Result<Vec<Record>>>()?;
+        let answers = Packet::read_records(&mut cursor, header.answer_count)?;
+        let authority = Packet::read_records(&mut cursor, header.authority_count)?;
+        let additional = Packet::read_records(&mut cursor, header.additional_count)?;
+
+        debug_assert_eq!(cursor.position() as usize, bytes.len());
 
         Ok(Packet {
             header,
             questions,
             answers,
+            authority,
+            additional,
         })
     }
 
@@ -271,6 +276,10 @@ impl Packet {
 
     pub fn set_id(&mut self, id: ID) {
         self.header.id = id;
+    }
+
+    pub fn set_response_code(&mut self, code: ResponseCode) {
+        self.header.response_code = code;
     }
 
     pub fn query_response(&self) -> bool {
@@ -314,9 +323,33 @@ impl Packet {
         &self.answers
     }
 
-    pub fn add_answer(&mut self, answer: Record) {
+    pub fn add_answer(&mut self, record: Record) {
         self.header.answer_count += 1;
-        self.answers.push(answer);
+        self.answers.push(record);
+    }
+
+    pub fn authority(&self) -> &[Record] {
+        &self.authority
+    }
+
+    pub fn add_authority(&mut self, record: Record) {
+        self.header.authority_count += 1;
+        self.authority.push(record);
+    }
+
+    pub fn additional(&self) -> &[Record] {
+        &self.additional
+    }
+
+    pub fn add_additional(&mut self, record: Record) {
+        self.header.additional_count += 1;
+        self.additional.push(record);
+    }
+
+    fn read_records(cursor: &mut Cursor<&[u8]>, count: u16) -> io::Result<Vec<Record>> {
+        (0..count)
+            .map(|_| Record::read_from(cursor))
+            .collect::<io::Result<Vec<Record>>>()
     }
 }
 
@@ -395,8 +428,8 @@ pub struct Header {
     additional_count: u16,
 }
 
-#[bitfield(bits = 16)]
 #[repr(u16)]
+#[bitfield(bits = 16)]
 #[derive(Debug)]
 struct HeaderFlags {
     #[bits = 4]
@@ -504,7 +537,7 @@ pub enum OpCode {
 // https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.3
 #[derive(Copy, Clone, Debug, Primitive, PartialEq, Eq, Hash)]
 pub enum QuestionType {
-    A = 1,      // host address
+    A = 1,      // host address, IPv4
     NS = 2,     // authoritative name server
     MD = 3,     // mail destination (Obsolete - use MX)
     MF = 4,     // mail forwarder (Obsolete - use MX)
@@ -521,7 +554,9 @@ pub enum QuestionType {
     MX = 15,    // mail exchange
     TXT = 16,   // text strings
 
-    AAAA = 28,
+    AAAA = 28, // host address, IPv6
+
+    OPT = 41, // pseudo-RR
 
     AXFR = 252,  // request for a transfer of an entire zone
     MAILB = 253, // request for mailbox-related records (MB, MG or MR)
@@ -537,6 +572,30 @@ pub enum QuestionClass {
     CS = 2, // the CSNET class (Obsolete - used only for examples in some obsolete RFCs)
     CH = 3, // the CHAOS class
     HS = 4, // Hesiod [Dyer 87]
+
+    ANY = 255, // aka "*"", any class
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceType {
+    A = 1,      // host address, IPv4
+    NS = 2,     // authoritative name server
+    MD = 3,     // mail destination (Obsolete - use MX)
+    MF = 4,     // mail forwarder (Obsolete - use MX)
+    CNAME = 5,  // the canonical name for an alias
+    SOA = 6,    // marks the start of a zone of authority
+    MB = 7,     // mailbox domain name (EXPERIMENTAL)
+    MG = 8,     // mail group member (EXPERIMENTAL)
+    MR = 9,     // mail rename domain name (EXPERIMENTAL)
+    NULL = 10,  // null RR (EXPERIMENTAL)
+    WKS = 11,   // well known service description
+    PTR = 12,   // domain name pointer
+    HINFO = 13, // host information
+    MINFO = 14, // mailbox or mail list information
+    MX = 15,    // mail exchange
+    TXT = 16,   // text strings
+
+    AAAA = 28, // host address, IPv6
 }
 
 /* Question section
@@ -562,22 +621,14 @@ pub struct Question {
 
 impl Question {
     pub fn read_from(cursor: &mut Cursor<&[u8]>) -> io::Result<Question> {
-        /* qname
-        a domain name represented as a sequence of labels, where
-        each label consists of a length octet followed by that
-        number of octets.  The domain name terminates with the
-        zero length octet for the null label of the root.  Note
-        that this field may be an odd number of octets; no
-        padding is used. */
-        let domain = CompressedDomain::read_from(cursor)?;
+        let name = CompressedDomain::read_from(cursor)?.uncompress(&cursor)?;
         let qtype = cursor.read_u16::<NetworkEndian>()?;
         let qclass = cursor.read_u16::<NetworkEndian>()?;
 
-        let name = domain.uncompress(&cursor)?;
         let qtype = QuestionType::from_u16(qtype)
             .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
         let qclass = QuestionClass::from_u16(qclass)
-            .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
+            .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid class"))?;
 
         Ok(Question {
             domain: name,
@@ -630,23 +681,63 @@ pub enum Record {
     // https://datatracker.ietf.org/doc/html/rfc1035#section-3.4.1
     A {
         name: String,
+        class: u16,
         ttl: u32,
         address: Ipv4Addr,
     },
+    // https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.11
     NS {
         name: String,
+        class: u16,
         ttl: u32,
         authoritative_host: String,
     },
     CNAME {
         name: String,
+        class: u16,
         ttl: u32,
         cname: String,
     },
+    // https://datatracker.ietf.org/doc/html/rfc3596#section-2.2
     AAAA {
         name: String,
+        class: u16,
         ttl: u32,
         address: Ipv6Addr,
+    },
+    // https://datatracker.ietf.org/doc/html/rfc6891#section-6.1
+    OPT {
+        name: String,
+        class: u16,
+        ttl: u32,
+        data: Vec<u8>,
+    },
+    // https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.12
+    PTR {
+        name: String,
+        class: u16,
+        ttl: u32,
+        ptrdname: String,
+    },
+    // https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.13
+    SOA {
+        name: String,
+        class: u16,
+        ttl: u32,
+        mname: String,
+        rname: String,
+        serial: u32,
+        refresh: u32,
+        retry: u32,
+        expire: u32,
+        minimum: u32,
+    },
+    // https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.14
+    TXT {
+        name: String,
+        class: u16,
+        ttl: u32,
+        data: Vec<u8>,
     },
 }
 
@@ -660,62 +751,180 @@ fn take_slice<'a>(cursor: &'a mut Cursor<&[u8]>, size: usize) -> &'a [u8] {
 
 impl Record {
     pub fn read_from(cursor: &mut Cursor<&[u8]>) -> io::Result<Record> {
-        let name = CompressedDomain::read_from(cursor)?;
+        let c = cursor.clone();
+        let name = CompressedDomain::read_from(cursor)?.uncompress(&cursor)?;
         let rtype = cursor.read_u16::<NetworkEndian>()?;
         let class = cursor.read_u16::<NetworkEndian>()?;
         let ttl = cursor.read_u32::<NetworkEndian>()?;
         let rdlength = cursor.read_u16::<NetworkEndian>()?.into();
+        let rddata = take_slice(cursor, rdlength);
 
-        assert!(class == 1);
-
-        let name = name.uncompress(&cursor)?;
-        let rtype = QuestionType::from_u16(rtype)
-            .ok_or(io::Error::new(io::ErrorKind::Other, "Invalid type"))?;
+        let rtype = QuestionType::from_u16(rtype).ok_or(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Invalid type: {}", rtype),
+        ))?;
 
         // TODO check type is valid for RDATA, not all qtypes are
-        
-        let bytes = take_slice(cursor, rdlength);
 
         match rtype {
-            QuestionType::A => Record::parse_a(name, ttl, bytes),
-            QuestionType::CNAME => Record::parse_cname(name, ttl, bytes),
-            _ => todo!(),
+            QuestionType::A => Record::parse_a(name, class, ttl, rddata),
+            QuestionType::CNAME => Record::parse_cname(name, class, ttl, rddata, &c),
+            QuestionType::SOA => Record::parse_soa(name, class, ttl, rddata, &c),
+            QuestionType::AAAA => Record::parse_aaaa(name, class, ttl, rddata),
+            QuestionType::OPT => Record::parse_opt(name, class, ttl, rddata),
+            QuestionType::TXT => Record::parse_txt(name, class, ttl, rddata),
+            QuestionType::PTR => Record::parse_ptr(name, class, ttl, rddata, &c),
+            _ => todo!("Unsupported rtype: {:?}", rtype),
         }
     }
 
     pub fn write_to<B: BufMut>(&self, buf: &mut B) -> io::Result<()> {
+        let rtype = self.rtype();
         match self {
-            Record::A { name, ttl, address } => {
-                let rtype = QuestionType::A;
-                let class = 1u16; // TODO
+            Record::A {
+                name,
+                class,
+                ttl,
+                address,
+            } => {
                 let rdata = address.octets();
 
-                Record::write_with_rdata(buf, name, rtype, class, *ttl, &rdata[..])
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
             }
-            _ => todo!(),
+            Record::CNAME {
+                name,
+                class,
+                ttl,
+                cname,
+            } => {
+                let mut rdata = Vec::new();
+
+                write_name(cname, &mut rdata);
+
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
+            }
+            Record::SOA {
+                name,
+                class,
+                ttl,
+                mname,
+                rname,
+                serial,
+                refresh,
+                retry,
+                expire,
+                minimum,
+            } => {
+                let mut rdata = Vec::new();
+
+                write_name(mname, &mut rdata);
+                write_name(rname, &mut rdata);
+                rdata.put_u32(*serial);
+                rdata.put_u32(*refresh);
+                rdata.put_u32(*retry);
+                rdata.put_u32(*expire);
+                rdata.put_u32(*minimum);
+
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
+            }
+            Record::PTR {
+                name,
+                class,
+                ttl,
+                ptrdname,
+            } => {
+                let mut rdata = Vec::new();
+
+                write_name(ptrdname, &mut rdata);
+
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
+            }
+            Record::AAAA {
+                name,
+                class,
+                ttl,
+                address,
+            } => {
+                let rdata = address.octets();
+
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
+            }
+            Record::TXT {
+                name,
+                class,
+                ttl,
+                data,
+            } => Record::write_with_rdata(buf, name, rtype, *class, *ttl, &data[..]),
+            Record::OPT {
+                name,
+                class,
+                ttl,
+                data,
+            } => Record::write_with_rdata(buf, name, rtype, *class, *ttl, &data[..]),
+            Record::NS {
+                name,
+                class,
+                ttl,
+                authoritative_host,
+            } => {
+                let mut rdata = Vec::new();
+
+                write_name(authoritative_host, &mut rdata);
+
+                Record::write_with_rdata(buf, name, rtype, *class, *ttl, &rdata[..])
+            }
         }
     }
 
     pub fn name(&self) -> &str {
         match self {
             Record::A { name, .. } => name,
-            _ => todo!(),
+            Record::NS { name, .. } => name,
+            Record::CNAME { name, .. } => name,
+            Record::SOA { name, .. } => name,
+            Record::PTR { name, .. } => name,
+            Record::OPT { name, .. } => name,
+            Record::AAAA { name, .. } => name,
+            Record::TXT { name, .. } => name,
         }
     }
 
     pub fn rtype(&self) -> QuestionType {
         match self {
             Record::A { .. } => QuestionType::A,
-            _ => todo!(),
+            Record::NS { .. } => QuestionType::NS,
+            Record::CNAME { .. } => QuestionType::CNAME,
+            Record::SOA { .. } => QuestionType::SOA,
+            Record::PTR { .. } => QuestionType::PTR,
+            Record::OPT { .. } => QuestionType::OPT,
+            Record::AAAA { .. } => QuestionType::AAAA,
+            Record::TXT { .. } => QuestionType::TXT,
         }
     }
 
     pub fn ttl(&self) -> u32 {
         match self {
             Record::A { ttl, .. } => *ttl,
-            Record::CNAME { ttl, .. } => *ttl,
             Record::NS { ttl, .. } => *ttl,
-            _ => todo!(),
+            Record::CNAME { ttl, .. } => *ttl,
+            Record::SOA { ttl, .. } => *ttl,
+            Record::PTR { ttl, .. } => *ttl,
+            Record::OPT { ttl, .. } => *ttl,
+            Record::AAAA { ttl, .. } => *ttl,
+            Record::TXT { ttl, .. } => *ttl,
+        }
+    }
+
+    pub fn reduce_ttl(&mut self, seconds: u32) {
+        match self {
+            Record::A { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::NS { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::CNAME { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::SOA { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::PTR { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::OPT { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::AAAA { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::TXT { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
         }
     }
 
@@ -723,15 +932,123 @@ impl Record {
         Duration::from_secs(self.ttl().into())
     }
 
-    fn parse_a(name: String, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
+    fn parse_a(name: String, class: u16, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
         assert_eq!(bytes.len(), 4);
         let address = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
-        Ok(Record::A { name, ttl, address })
+        Ok(Record::A {
+            name,
+            class,
+            ttl,
+            address,
+        })
     }
 
-    fn parse_cname(name: String, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
-        let cname = String::from(std::str::from_utf8(bytes).unwrap());
-        Ok(Record::CNAME { name, ttl, cname })
+    fn parse_cname(
+        name: String,
+        class: u16,
+        ttl: u32,
+        bytes: &[u8],
+        packet_cursor: &Cursor<&[u8]>,
+    ) -> io::Result<Record> {
+        let mut cursor = Cursor::new(bytes);
+
+        // TODO, the uncompress cursor needs to be over the entire packet so uncompressing can work
+        let cname = CompressedDomain::read_from(&mut cursor)?.uncompress(packet_cursor)?;
+
+        assert_eq!(cursor.position() as usize, bytes.len());
+
+        Ok(Record::CNAME {
+            name,
+            class,
+            ttl,
+            cname,
+        })
+    }
+
+    fn parse_soa(
+        name: String,
+        class: u16,
+        ttl: u32,
+        bytes: &[u8],
+        packet_cursor: &Cursor<&[u8]>,
+    ) -> io::Result<Record> {
+        let mut cursor = Cursor::new(bytes);
+
+        let mname = CompressedDomain::read_from(&mut cursor)?.uncompress(packet_cursor)?;
+        let rname = CompressedDomain::read_from(&mut cursor)?.uncompress(packet_cursor)?;
+        let serial = cursor.read_u32::<NetworkEndian>()?;
+        let refresh = cursor.read_u32::<NetworkEndian>()?;
+        let retry = cursor.read_u32::<NetworkEndian>()?;
+        let expire = cursor.read_u32::<NetworkEndian>()?;
+        let minimum = cursor.read_u32::<NetworkEndian>()?;
+
+        assert_eq!(cursor.position() as usize, bytes.len());
+
+        Ok(Record::SOA {
+            name,
+            class,
+            ttl,
+            mname,
+            rname,
+            serial,
+            refresh,
+            retry,
+            expire,
+            minimum,
+        })
+    }
+
+    fn parse_opt(name: String, class: u16, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
+        Ok(Record::OPT {
+            name,
+            class,
+            ttl,
+            data: bytes.to_vec(),
+        })
+    }
+
+    fn parse_txt(name: String, class: u16, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
+        Ok(Record::TXT {
+            name,
+            class,
+            ttl,
+            data: bytes.to_vec(),
+        })
+    }
+
+    fn parse_ptr(
+        name: String,
+        class: u16,
+        ttl: u32,
+        bytes: &[u8],
+        packet_cursor: &Cursor<&[u8]>,
+    ) -> io::Result<Record> {
+        let mut cursor = Cursor::new(bytes);
+
+        // TODO, the uncompress cursor needs to be over the entire packet so uncompressing can work
+        let ptrdname = CompressedDomain::read_from(&mut cursor)?.uncompress(packet_cursor)?;
+
+        assert_eq!(cursor.position() as usize, bytes.len());
+
+        Ok(Record::PTR {
+            name,
+            class,
+            ttl,
+            ptrdname,
+        })
+    }
+    fn parse_aaaa(name: String, class: u16, ttl: u32, bytes: &[u8]) -> io::Result<Record> {
+        assert_eq!(bytes.len(), 16);
+        let address = Ipv6Addr::from([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ]);
+        Ok(Record::AAAA {
+            name,
+            class,
+            ttl,
+            address,
+        })
     }
 
     fn write_with_rdata<B: BufMut>(
@@ -764,7 +1081,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_domain_read_from_labels() {
+    fn domain_read_from_labels() {
         // F.ISI.ARPA
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // |           1           |           F           |
@@ -804,7 +1121,7 @@ mod tests {
 
     // TODO is this a valid name
     #[test]
-    fn test_domain_read_empty_labels() {
+    fn domain_read_empty_labels() {
         // +--+--+--+--+--+--+--+--+
         // |           0           |
         // +--+--+--+--+--+--+--+--+
@@ -828,7 +1145,7 @@ mod tests {
         assert_eq!("", domain.uncompress(&cursor).unwrap());
     }
     #[test]
-    fn test_domain_read_from_pointer() {
+    fn domain_read_from_pointer() {
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // | 1  1|                26                       |
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -852,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn test_domain_read_from_labels_and_pointer() {
+    fn domain_read_from_labels_and_pointer() {
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // |           3           |           F           |
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -882,7 +1199,7 @@ mod tests {
     // TODO add tests for domain name uncompress
 
     #[test]
-    fn test_domain_write_f_isi_arpa() {
+    fn domain_write_f_isi_arpa() {
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // |           1           |           F           |
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -908,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_domain_write_google_com() {
+    fn domain_write_google_com() {
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
         // |           6           |           g           |
         // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -934,17 +1251,21 @@ mod tests {
     }
 
     #[test]
-    fn test_packet_from_query_a_bytes() {
+    fn packet_from_bytes_query_google_com_noedns_a() {
         // Captured query from running `dig +noedns google.com`
-        const QUERY_GOOGLE_COM: [u8; 28] = [
+        const QUERY: [u8; 28] = [
             0x0f, 0x13, // ID
             0x01, 0x20, // flags = rd, z = 2
             0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x67, 0x6f, 0x6f, 0x67, 0x6c,
             0x65, 0x03, 0x63, 0x6f, 0x6d, 0x00, 0x00, 0x01, 0x00, 0x01,
         ];
 
-        let packet = Packet::from_bytes(&QUERY_GOOGLE_COM[..]).unwrap();
+        let packet = Packet::from_bytes(&QUERY[..]).unwrap();
 
+        assert_eq!(packet.id(), 0x0f13);
+        assert_eq!(packet.recursion_desired(), true);
+        assert_eq!(packet.recursion_available(), false);
+        assert_eq!(packet.query_response(), false);
         assert_eq!(
             packet.questions,
             vec![Question {
@@ -956,61 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_write_to_with_request() {
-        let header = Header {
-            id: 6666,
-            query_response: false,
-            operation_code: OpCode::Query,
-            authoritative_answer: false,
-            truncated_message: false,
-            recursion_desired: true,
-            recursion_available: false,
-            z: 2,
-            response_code: ResponseCode::NoErrorCondition,
-            question_count: 1,
-            answer_count: 0,
-            authority_count: 0,
-            additional_count: 0,
-        };
-        let mut buf = Vec::new();
-
-        header.write_to(&mut buf).unwrap();
-
-        assert_eq!(
-            [0x1a, 0x0a, 0x01, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            &buf[..]
-        )
-    }
-
-    #[test]
-    fn test_header_write_to_with_failure_response() {
-        let header = Header {
-            id: 9001,
-            query_response: true,
-            operation_code: OpCode::Query,
-            authoritative_answer: false,
-            truncated_message: false,
-            recursion_desired: true,
-            recursion_available: true,
-            z: 2,
-            response_code: ResponseCode::ServerFailure,
-            question_count: 1,
-            answer_count: 0,
-            authority_count: 0,
-            additional_count: 0,
-        };
-        let mut buf = Vec::new();
-
-        header.write_to(&mut buf).unwrap();
-
-        assert_eq!(
-            [0x23, 0x29, 0x81, 0xa2, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            &buf[..]
-        )
-    }
-
-    #[test]
-    fn test_packet_from_response_a_bytes() {
+    fn packet_from_bytes_response_google_com_noedns_a() {
         // Captured response from running `dig +noedns google.com`
         const RESPONSE_GOOGLE_COM: [u8; 124] = [
             0x9a, 0x9e, // ID
@@ -1056,42 +1323,255 @@ mod tests {
                 qclass: QuestionClass::IN,
             }]
         );
-
         assert_eq!(
             packet.answers,
             vec![
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.113".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.139".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.100".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.101".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.102".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.138".parse().unwrap(),
                 }
             ]
         );
+    }
+
+    #[test]
+    fn packet_from_bytes_query_example_com_a() {
+        // Captured query from running `dig example.com`
+        const QUERY: [u8; 52] = [
+            0xcd, 0xf0, // ID
+            0x01, 0x20, // flags = rd, z = 2 ??
+            0x00, 0x01, // qdcount
+            0x00, 0x00, // ancount
+            0x00, 0x00, // nscount
+            0x00, 0x01, // arcount
+            0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, // example
+            0x03, 0x63, 0x6f, 0x6d, // com
+            0x00, // null terminator
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x29, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0c, 0x00, 0x0a, 0x00, 0x08, 0x06, 0xc4, 0x4b, 0xc0, 0xb3, 0x80, 0xc8, 0xa9,
+        ];
+
+        let packet = Packet::from_bytes(&QUERY[..]).unwrap();
+
+        assert_eq!(packet.id(), 0xcdf0);
+
+        assert_eq!(packet.authoritative_answer(), false);
+        assert_eq!(packet.truncated_message(), false);
+        assert_eq!(packet.recursion_desired(), true);
+        assert_eq!(packet.recursion_available(), false);
+        assert_eq!(packet.query_response(), false);
+        assert_eq!(
+            packet.questions,
+            vec![Question {
+                domain: String::from("example.com"),
+                qtype: QuestionType::A,
+                qclass: QuestionClass::IN,
+            }]
+        );
+    }
+
+    #[test]
+    fn packet_from_bytes_response_example_com_a() {
+        // Captured response from running `dig example.com`
+        const QUERY: [u8; 56] = [
+            0xcd, 0xf0, // ID
+            0x81, 0xa0, // flags = ??
+            0x00, 0x01, // qdcount
+            0x00, 0x01, // ancount
+            0x00, 0x00, // nscount
+            0x00, 0x01, // arcount
+            0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, // example
+            0x03, 0x63, 0x6f, 0x6d, // com
+            0x00, // null terminator
+            0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x4a, 0xfb,
+            0x00, 0x04, 0x5d, 0xb8, 0xd8, 0x22, 0x00, 0x00, 0x29, 0x04, 0xd0, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00,
+        ];
+
+        let packet = Packet::from_bytes(&QUERY[..]).unwrap();
+
+        assert_eq!(true, packet.query_response());
+        assert_eq!(false, packet.authoritative_answer());
+        assert_eq!(false, packet.truncated_message());
+        assert_eq!(true, packet.recursion_desired());
+        assert_eq!(true, packet.recursion_available());
+
+        assert_eq!(
+            packet.questions,
+            vec![Question {
+                domain: String::from("example.com"),
+                qtype: QuestionType::A,
+                qclass: QuestionClass::IN,
+            }]
+        );
+
+        assert_eq!(
+            packet.answers,
+            vec![Record::A {
+                name: String::from("example.com"),
+                class: 1,
+                ttl: 84731,
+                address: "93.184.216.34".parse().unwrap(),
+            },]
+        );
+    }
+
+    // Added because the following was observed in production: thread 'tokio-runtime-worker'
+    // panicked at 'called `Result::unwrap()` on an `Err` value:
+    // Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }', src/server.rs:74:55
+    #[test]
+    fn packet_from_bytes_query_api_snapcraft_io_aaaa() {
+        // Captured query from running `dig api.snapcraft.io AAAA`
+        let bytes = base64::decode(
+            "ZlsBIAABAAAAAAABA2FwaQlzbmFwY3JhZnQCaW8AABwAAQAAKRAAAAAAAAAMAAoACNZr6UbM1QW7",
+        )
+        .unwrap();
+
+        let packet = Packet::from_bytes(&bytes[..]).unwrap();
+
+        assert_eq!(packet.id(), 0x665b);
+
+        assert_eq!(packet.authoritative_answer(), false);
+        assert_eq!(packet.truncated_message(), false);
+        assert_eq!(packet.recursion_desired(), true);
+        assert_eq!(packet.recursion_available(), false);
+        assert_eq!(packet.query_response(), false);
+        assert_eq!(
+            packet.questions,
+            vec![Question {
+                domain: String::from("api.snapcraft.io"),
+                qtype: QuestionType::AAAA,
+                qclass: QuestionClass::IN,
+            }]
+        );
+    }
+
+    #[test]
+    fn packet_from_bytes_response_snapcraft_io_aaaa() {
+        // Captured response from running `dig api.snapcraft.io AAAA`
+        let bytes = &base64::decode("ZluBgAABAAAAAQABA2FwaQlzbmFwY3JhZnQCaW8AABwAAcAQAAYAAQAADPwANANuczEJY2Fub25pY2FsA2NvbQAKaG9zdG1hc3RlcsAyeEkEfwAAKjAAAA4QAAk6gAAADhAAACkE0AAAAAAAAA==").unwrap()[..];
+
+        let packet = Packet::from_bytes(bytes).unwrap();
+
+        assert_eq!(packet.id(), 0x665b);
+
+        assert_eq!(true, packet.query_response());
+        assert_eq!(false, packet.authoritative_answer());
+        assert_eq!(false, packet.truncated_message());
+        assert_eq!(true, packet.recursion_desired());
+        assert_eq!(true, packet.recursion_available());
+
+        assert_eq!(
+            packet.questions,
+            vec![Question {
+                domain: String::from("api.snapcraft.io"),
+                qtype: QuestionType::AAAA,
+                qclass: QuestionClass::IN,
+            }]
+        );
+
+        assert_eq!(packet.answers, vec![]);
+        assert_eq!(
+            packet.authority,
+            vec![Record::SOA {
+                name: "snapcraft.io".to_string(),
+                class: 1,
+                ttl: 3324,
+                mname: "ns1.canonical.com".to_string(),
+                rname: "hostmaster.canonical.com".to_string(),
+                serial: 2018051199,
+                refresh: 10800,
+                retry: 3600,
+                expire: 604800,
+                minimum: 3600,
+            }]
+        );
+    }
+
+    #[test]
+    fn header_write_to_with_request() {
+        let header = Header {
+            id: 6666,
+            query_response: false,
+            operation_code: OpCode::Query,
+            authoritative_answer: false,
+            truncated_message: false,
+            recursion_desired: true,
+            recursion_available: false,
+            z: 2,
+            response_code: ResponseCode::NoErrorCondition,
+            question_count: 1,
+            answer_count: 0,
+            authority_count: 0,
+            additional_count: 0,
+        };
+        let mut buf = Vec::new();
+
+        header.write_to(&mut buf).unwrap();
+
+        assert_eq!(
+            [0x1a, 0x0a, 0x01, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            &buf[..]
+        )
+    }
+
+    #[test]
+    fn header_write_to_with_failure_response() {
+        let header = Header {
+            id: 9001,
+            query_response: true,
+            operation_code: OpCode::Query,
+            authoritative_answer: false,
+            truncated_message: false,
+            recursion_desired: true,
+            recursion_available: true,
+            z: 2,
+            response_code: ResponseCode::ServerFailure,
+            question_count: 1,
+            answer_count: 0,
+            authority_count: 0,
+            additional_count: 0,
+        };
+        let mut buf = Vec::new();
+
+        header.write_to(&mut buf).unwrap();
+
+        assert_eq!(
+            [0x23, 0x29, 0x81, 0xa2, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            &buf[..]
+        )
     }
 }
 
@@ -1223,10 +1703,18 @@ mod properties {
             let answers = (0..header.answer_count)
                 .map(|_| Record::arbitrary(g))
                 .collect_vec();
+            let authority = (0..header.authority_count)
+                .map(|_| Record::arbitrary(g))
+                .collect_vec();
+            let additional = (0..header.additional_count)
+                .map(|_| Record::arbitrary(g))
+                .collect_vec();
             Packet {
                 header,
                 questions,
                 answers,
+                authority,
+                additional,
             }
         }
     }
@@ -1266,6 +1754,7 @@ mod properties {
             // TODO other record types
             Record::A {
                 name: arbitrary_name(g),
+                class: 1,
                 ttl: u32::arbitrary(g),
                 address: Ipv4Addr::arbitrary(g),
             }

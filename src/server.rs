@@ -64,27 +64,46 @@ where
                 origin.ip()
             );
 
-            question.clone()
+            question
         };
 
-        let query = self
-            .resolver
-            .query(&question.domain, question.qtype, question.qclass);
+        let query = self.resolver.query(question.clone());
         let query = timeout(QUERY_TIMEOUT, query);
         let response: Response = query.await.unwrap().unwrap();
 
         let mut packet = Packet::new();
         packet.set_id(request.id());
-        packet.add_question(question);
+        packet.set_response_code(response.code);
+        packet.add_question(question.clone());
         for answer in response.answers {
             info!(
-                "Answer {} {} {:?} from {}",
+                "Answer {} {} {:?} from {:?}",
                 answer.name(),
                 answer.ttl(),
                 answer.rtype(),
-                response.origin.ip()
+                response.origin,
             );
             packet.add_answer(answer);
+        }
+        for r in response.authority {
+            info!(
+                "Authority {} {} {:?} from {:?}",
+                r.name(),
+                r.ttl(),
+                r.rtype(),
+                response.origin,
+            );
+            packet.add_authority(r);
+        }
+        for r in response.additional {
+            info!(
+                "Additional {} {} {:?} from {:?}",
+                r.name(),
+                r.ttl(),
+                r.rtype(),
+                response.origin,
+            );
+            packet.add_additional(r);
         }
 
         let bytes = packet.to_bytes().unwrap();

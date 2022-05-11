@@ -1,8 +1,8 @@
 use crate::{protocol::*, resolver::*};
 use async_trait::async_trait;
 use rand::prelude::*;
+use std::net::SocketAddr;
 use std::{io, net::ToSocketAddrs};
-use std::{net::SocketAddr, sync::Arc};
 use tokio::net::UdpSocket;
 use tracing::trace;
 
@@ -97,8 +97,11 @@ where
             if packet.id() == request_id && response_question == question {
                 // Received the expected response, stop listening
                 return Ok(Response {
+                    code: packet.response_code(),
                     answers: packet.answers().to_vec(),
-                    origin,
+                    authority: packet.authority().to_vec(),
+                    additional: packet.additional().to_vec(),
+                    origin: Some(origin),
                 });
             }
         }
@@ -111,23 +114,13 @@ where
     P: ConnectionFactory + Send + Sync,
     <P as ConnectionFactory>::C: Connection + Send + Sync,
 {
-    async fn query(
-        &self,
-        domain: &str,
-        qtype: QuestionType,
-        qclass: QuestionClass,
-    ) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> io::Result<Response> {
         let socket = self.factory.make_connection().await?;
 
         // Generate an id for this request
         let request_id = socket.gen_request_id();
 
         // Build request
-        let question = Question {
-            domain: domain.to_owned(),
-            qtype,
-            qclass,
-        };
         let mut request = Packet::new();
         request.set_id(request_id);
         request.add_question(question.clone());
@@ -138,23 +131,6 @@ where
 
         // Wait for response
         self.receive_response(&socket, request_id, question).await
-    }
-}
-
-#[async_trait]
-impl<P> Resolver for Arc<StubResolver<P>>
-where
-    P: ConnectionFactory + Send + Sync,
-    <P as ConnectionFactory>::C: Connection + Send + Sync,
-{
-    #[inline]
-    async fn query(
-        &self,
-        domain: &str,
-        qtype: QuestionType,
-        qclass: QuestionClass,
-    ) -> io::Result<Response> {
-        self.as_ref().query(domain, qtype, qclass).await
     }
 }
 
@@ -290,10 +266,7 @@ mod tests {
             factory: MockProvider(connection),
         };
 
-        let response = stub
-            .query("google.com", QuestionType::A, QuestionClass::IN)
-            .await
-            .unwrap();
+        let response = stub.lookup_ip4("google.com").await.unwrap();
 
         assert_eq!(
             sends.lock().to_vec(),
@@ -303,37 +276,43 @@ mod tests {
                 0x03, 0x63, 0x6f, 0x6d, 0, 0, 1, 0, 1
             ]]
         );
-        assert_eq!(response.origin, remote_addr);
+        assert_eq!(response.origin.unwrap(), remote_addr);
         assert_eq!(
             response.answers,
             vec![
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.113".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.139".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.100".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.101".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.102".parse().unwrap(),
                 },
                 Record::A {
                     name: String::from("google.com"),
+                    class: 1,
                     ttl: 153,
                     address: "74.125.142.138".parse().unwrap(),
                 }
