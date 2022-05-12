@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
 
     let remote_addr = env::args()
-        .nth(1)
+        .nth(2)
         .unwrap_or_else(|| "1.1.1.1:53".to_string());
 
     let socket = UdpSocket::bind(&listen_addr).await?;
