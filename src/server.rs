@@ -1,8 +1,8 @@
-use crate::resolver::Resolver;
+use crate::resolver::{ResolveError, Resolver};
 use crate::{protocol::*, resolver::Response};
-use std::{io, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{net::UdpSocket, time::timeout};
-use tracing::{info, trace};
+use std::{io, net::SocketAddr, sync::Arc};
+use tokio::net::UdpSocket;
+use tracing::{info, trace, warn};
 
 pub struct Server<R>(Arc<Inner<R>>);
 
@@ -47,33 +47,47 @@ impl<R> Inner<R>
 where
     R: Resolver,
 {
-    async fn handle_request(self: Arc<Self>, request: Packet, origin: SocketAddr) {
-        let question = {
-            let questions = request.questions();
+    async fn handle_request(self: &Arc<Self>, request: Packet, origin: SocketAddr) {
+        let id = request.id();
 
-            assert_eq!(questions.len(), 1);
+        let questions = request.questions();
 
-            let question = &questions[0];
+        assert_eq!(questions.len(), 1);
 
-            info!(
-                "Query {} {:?} from {}",
-                question.domain,
-                question.qtype,
-                origin.ip()
-            );
+        let question = &questions[0];
 
-            // TODO support ANY
-            assert_eq!(question.qclass, QuestionClass::IN);
+        info!(
+            "Query {} {:?} from {}",
+            question.domain,
+            question.qtype,
+            origin.ip()
+        );
 
-            question
-        };
+        // TODO support ANY
+        assert_eq!(question.qclass, QuestionClass::IN);
 
-        let response: Response = self.resolver.query(question.clone()).await.unwrap();
-
+        match self.resolver.query(question.clone()).await {
+            Ok(response) => {
+                self.send_response(response, id, question.clone(), origin)
+                    .await
+            }
+            Err(ResolveError::Dropped) => (),
+            Err(ResolveError::Io(err)) => {
+                warn!(?err, "Error resolving query");
+            }
+        }
+    }
+    async fn send_response(
+        self: &Arc<Self>,
+        response: Response,
+        id: ID,
+        question: Question,
+        origin: SocketAddr,
+    ) {
         let mut packet = Packet::new();
-        packet.set_id(request.id());
+        packet.set_id(id);
         packet.set_response_code(response.code);
-        packet.add_question(question.clone());
+        packet.add_question(question);
         for answer in response.answers {
             info!(
                 "Answer {} {} {:?} from {:?}",

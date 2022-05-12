@@ -1,6 +1,6 @@
 use crate::{protocol::*, resolver::*};
 use async_trait::async_trait;
-use std::{io, net::Ipv4Addr};
+use std::net::Ipv4Addr;
 
 const SPECIAL_TTL: u32 = 655360;
 
@@ -23,7 +23,7 @@ impl<R> SpecialResolver<R> {
 
 #[async_trait]
 impl<R: Resolver + Send + Sync> Resolver for SpecialResolver<R> {
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         if question.qclass == QuestionClass::IN {
             if question.qtype == QuestionType::PTR {
                 if question.domain == "1.0.0.127.in-addr.arpa" {

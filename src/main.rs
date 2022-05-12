@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "1.1.1.1:53".to_string());
 
     let socket = UdpSocket::bind(&listen_addr).await?;
+
     let resolver = resolver::Stub::new(&remote_addr)?;
     let resolver = resolver::ResponseCache::new(resolver, 1000);
     let resolver = resolver::Timeout::new(resolver, Duration::from_secs(10));

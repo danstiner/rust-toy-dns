@@ -1,6 +1,6 @@
 use crate::{protocol::*, resolver::*};
 use async_trait::async_trait;
-use std::{io, time::Duration};
+use std::time::Duration;
 
 pub struct Timeout<R> {
     inner: R,
@@ -18,7 +18,7 @@ impl<R> Timeout<R> {
 
 #[async_trait]
 impl<R: Resolver + Send + Sync> Resolver for Timeout<R> {
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         tokio::time::timeout(self.timeout, self.inner.query(question))
             .await
             .unwrap()

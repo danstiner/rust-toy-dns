@@ -576,6 +576,7 @@ pub enum QuestionClass {
     ANY = 255, // aka "*"", any class
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceType {
     A = 1,      // host address, IPv4
@@ -675,8 +676,8 @@ Each resource record has the following format:
     /                                               /
     +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
  */
-#[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Record {
     // https://datatracker.ietf.org/doc/html/rfc1035#section-3.4.1
     A {

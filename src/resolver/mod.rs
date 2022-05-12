@@ -8,6 +8,7 @@ mod timeout;
 use crate::protocol::*;
 use async_trait::async_trait;
 use std::{io, net::SocketAddr, sync::Arc};
+use thiserror::Error;
 
 pub use self::hide_ttl::HideTtl;
 pub use self::inflight_limit::InflightLimitResolver as InflightLimit;
@@ -41,9 +42,9 @@ pub use self::timeout::Timeout;
 ///
 #[async_trait]
 pub trait Resolver {
-    async fn query(&self, question: Question) -> io::Result<Response>;
+    async fn query(&self, question: Question) -> Result<Response, ResolveError>;
 
-    async fn lookup_ip4(&self, domain: &str) -> io::Result<Response> {
+    async fn lookup_ip4(&self, domain: &str) -> Result<Response, ResolveError> {
         self.query(Question {
             domain: domain.to_owned(),
             qtype: QuestionType::A,
@@ -51,14 +52,23 @@ pub trait Resolver {
         })
         .await
     }
+
+    async fn lookup_ip6(&self, domain: &str) -> Result<Response, ResolveError> {
+        self.query(Question {
+            domain: domain.to_owned(),
+            qtype: QuestionType::AAAA,
+            qclass: QuestionClass::IN,
+        })
+        .await
+    }
 }
 
 // Transparently support resolvers inside reference-counted pointers, very handy
-// because spawned tasks using a resolver require a 'static bound. The server struct does this.
+// because spawned tasks using a resolver require a 'static bound.
 #[async_trait]
 impl<R: Resolver + Send + Sync> Resolver for Arc<R> {
     #[inline]
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         self.as_ref().query(question).await
     }
 }
@@ -72,12 +82,10 @@ pub struct Response {
     pub origin: Option<SocketAddr>,
 }
 
-impl Response {
-    pub const EMPTY: Response = Response {
-        code: ResponseCode::NoError,
-        answers: vec![],
-        authority: vec![],
-        additional: vec![],
-        origin: None,
-    };
+#[derive(Error, Debug)]
+pub enum ResolveError {
+    #[error("I/O error: {0}")]
+    Io(#[from] io::Error),
+    #[error("query was dropped")]
+    Dropped,
 }

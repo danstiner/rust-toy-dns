@@ -4,7 +4,6 @@ use parking_lot::Mutex;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
-use std::io;
 use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{info, warn};
@@ -55,7 +54,7 @@ impl<R> ResponseCache<R> {
 
 #[async_trait]
 impl<R: Resolver + Send + Sync> Resolver for ResponseCache<R> {
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         let key = CacheKey::new(&question.clone());
         let now = Instant::now();
 
@@ -248,7 +247,7 @@ mod tests {
 
     #[async_trait]
     impl Resolver for &MockResolver {
-        async fn query(&self, _question: Question) -> io::Result<Response> {
+        async fn query(&self, _question: Question) -> Result<Response, ResolveError> {
             *self.query_count.lock() += 1;
             Ok(self.response.clone())
         }

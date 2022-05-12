@@ -39,7 +39,7 @@ where
         socket: &P::C,
         request_id: ID,
         question: Question,
-    ) -> io::Result<Response> {
+    ) -> Result<Response, ResolveError> {
         // https://datatracker.ietf.org/doc/html/rfc1035#section-7.3
         // The next step is to match the response to a current resolver request.
         // The recommended strategy is to do a preliminary matching using the ID
@@ -85,24 +85,39 @@ where
 
             trace!(?packet, ?bytes, ?origin, "Received response packet");
 
-            let response_question = {
-                let questions = packet.questions();
+            if packet.id() == request_id {
+                // Handle refusals that do not return our question. this happens for "wpad" queries.
+                // TODO is that valid DNS behavior? Should these be cached?
+                if packet.response_code() == ResponseCode::Refused && packet.questions().is_empty()
+                {
+                    return Ok(Response {
+                        code: ResponseCode::Refused,
+                        answers: vec![],
+                        authority: vec![],
+                        additional: vec![],
+                        origin: Some(origin),
+                    });
+                }
 
-                assert_eq!(questions.len(), 1);
+                let response_question = {
+                    let questions = packet.questions();
 
-                questions[0].clone()
-            };
+                    assert_eq!(questions.len(), 1);
 
-            // TODO log non-matches
-            if packet.id() == request_id && response_question == question {
-                // Received the expected response, stop listening
-                return Ok(Response {
-                    code: packet.response_code(),
-                    answers: packet.answers().to_vec(),
-                    authority: packet.authority().to_vec(),
-                    additional: packet.additional().to_vec(),
-                    origin: Some(origin),
-                });
+                    questions[0].clone()
+                };
+
+                // TODO log non-matches
+                if response_question == question {
+                    // Received the expected response, stop listening
+                    return Ok(Response {
+                        code: packet.response_code(),
+                        answers: packet.answers().to_vec(),
+                        authority: packet.authority().to_vec(),
+                        additional: packet.additional().to_vec(),
+                        origin: Some(origin),
+                    });
+                }
             }
         }
     }
@@ -114,7 +129,7 @@ where
     P: ConnectionFactory + Send + Sync,
     <P as ConnectionFactory>::C: Connection + Send + Sync,
 {
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         let socket = self.factory.make_connection().await?;
 
         // Generate an id for this request

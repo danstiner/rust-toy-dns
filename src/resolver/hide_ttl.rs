@@ -1,6 +1,5 @@
 use crate::{protocol::*, resolver::*};
 use async_trait::async_trait;
-use std::io;
 
 /// Resolver that hides TTL values on responses by setting them all to zero
 pub struct HideTtl<R> {
@@ -15,7 +14,7 @@ impl<R> HideTtl<R> {
 
 #[async_trait]
 impl<R: Resolver + Send + Sync> Resolver for HideTtl<R> {
-    async fn query(&self, question: Question) -> io::Result<Response> {
+    async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         let mut response = self.inner.query(question).await?;
 
         for r in &mut response.answers {
