@@ -17,7 +17,7 @@ impl<R: Resolver + Send + Sync> Resolver for HideTtl<R> {
     async fn query(&self, question: Question) -> Result<Response, ResolveError> {
         let mut response = self.inner.query(question).await?;
 
-        for r in &mut response.answers {
+        for r in &mut response.answer {
             r.set_ttl(0);
         }
         for r in &mut response.authority {

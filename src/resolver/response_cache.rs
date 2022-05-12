@@ -38,7 +38,7 @@ impl<R> ResponseCache<R> {
         let age = now.saturating_duration_since(entry.inserted_at);
         let age_sec = age.as_secs().try_into().unwrap_or(u32::MAX);
 
-        for r in &mut response.answers {
+        for r in &mut response.answer {
             r.set_ttl(r.ttl().saturating_sub(age_sec));
         }
         for r in &mut response.authority {
@@ -170,7 +170,7 @@ impl CacheEntry {
 
     fn ttl(response: &Response) -> Duration {
         let all_records = response
-            .answers
+            .answer
             .iter()
             .chain(response.authority.iter())
             .chain(response.additional.iter());
@@ -219,7 +219,7 @@ mod tests {
     fn mock_response() -> Response {
         Response {
             code: ResponseCode::NoError,
-            answers: vec![Record::A {
+            answer: vec![Record::A {
                 name: "example.com".to_string(),
                 class: 1,
                 ttl: 300,

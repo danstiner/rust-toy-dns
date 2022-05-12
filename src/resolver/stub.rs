@@ -92,7 +92,7 @@ where
                 {
                     return Ok(Response {
                         code: ResponseCode::Refused,
-                        answers: vec![],
+                        answer: vec![],
                         authority: vec![],
                         additional: vec![],
                         origin: Some(origin),
@@ -112,7 +112,7 @@ where
                     // Received the expected response, stop listening
                     return Ok(Response {
                         code: packet.response_code(),
-                        answers: packet.answers().to_vec(),
+                        answer: packet.answers().to_vec(),
                         authority: packet.authority().to_vec(),
                         additional: packet.additional().to_vec(),
                         origin: Some(origin),
@@ -293,7 +293,7 @@ mod tests {
         );
         assert_eq!(response.origin.unwrap(), remote_addr);
         assert_eq!(
-            response.answers,
+            response.answer,
             vec![
                 Record::A {
                     name: String::from("google.com"),

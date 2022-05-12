@@ -60,7 +60,7 @@ impl<R: Resolver + Send + Sync> Resolver for SpecialResolver<R> {
 fn special_response(record: Record) -> Response {
     Response {
         code: ResponseCode::NoError,
-        answers: vec![record],
+        answer: vec![record],
         authority: vec![],
         additional: vec![],
         origin: None,

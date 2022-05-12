@@ -88,7 +88,7 @@ where
         packet.set_id(id);
         packet.set_response_code(response.code);
         packet.add_question(question);
-        for answer in response.answers {
+        for answer in response.answer {
             info!(
                 "Answer {} {} {:?} from {:?}",
                 answer.name(),

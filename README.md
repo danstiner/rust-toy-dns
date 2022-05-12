@@ -66,6 +66,7 @@ A set of security extensions introduced in 1997 that have failed to reach wide a
 
 ## TODO
 
+- [ ] Apply one week TTL limit to all responses
 - [ ] Cache negative responses
 - [ ] Truncate to-long responses (and set TC bit)
 - [ ] Support for extended UDP responses
@@ -74,9 +75,9 @@ A set of security extensions introduced in 1997 that have failed to reach wide a
 - [ ] Benchmarking
 - [ ] Initialize from from resolver.conf etc
 - [ ] Increase incoming UDP socket buffer size (similar to socket_tryreservein, something like 128KB is enough)
-- [ ] Recursive resolver (note http://cr.yp.to/djbdns/separation.html)
+- [ ] Recursive resolver (note http://cr.yp.to/djbdns/separation.html, though I never intend this to be an authoritative server)
 - [ ] DNSCrypt, DNS over TLS, or DNS over HTTPS support
-- [ ] TODO: Use cryptographic generator to select ports instead of relying on Linux's behavior of finding an open port when binding to port zero. There are two main issues with Linux's behavior. First, older kernels have a "trivially predictable" prandom_u32 implementation used to select a port. Newer kernels utilize SipHash which is a "PITA" to guess, but still not cryptographically secure. Second, Linux selects from a relatively small set of source ports. Specifically it prefers to use odd ports for outgoing connections, and only from the configured empheral port range (net.ipv4.ip_local_port_range) which is usually 32768-60999. That's effectively one quarter of the available ports, meaning instead of 16 bits of security against cache poisoning we get under 14 bits, a relatively small but still meaningful difference.
+- [ ] TODO: Use cryptographic generator to select ports instead of relying on Linux's behavior of finding an open port when binding to port zero. There are two main issues with Linux's behavior. First, older kernels have a "trivially predictable" prandom_u32 implementation used to select a port. Newer kernels utilize SipHash which is a "PITA" to guess, but still not cryptographically secure. Second, Linux selects from a relatively small set of source ports. Specifically it prefers to use odd ports for outgoing connections, and only from the configured ephemeral port range (net.ipv4.ip_local_port_range) which is usually 32768-60999. That's effectively one quarter of the available ports, meaning instead of 16 bits of security against cache poisoning we get under 14 bits, a meaningful difference.
 
 ## Notes
 

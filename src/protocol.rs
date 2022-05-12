@@ -15,188 +15,17 @@ pub const MAX_PACKET_SIZE: usize = 512;
 pub type ID = u16;
 
 /*
-https://datatracker.ietf.org/doc/html/rfc1035#section-3.1
-
-3.1. Name space definitions
-
-<domain-name> is a domain name represented as a series of labels, and
-terminated by a label with zero length.  <character-string> is a single
-length octet followed by that number of characters.  <character-string>
-is treated as binary information, and can be up to 256 characters in
-length (including the length octet).
-
-In order to reduce the size of messages, the domain system utilizes a
-compression scheme which eliminates the repetition of domain names in a
-message.  In this scheme, an entire domain name or a list of labels at
-the end of a domain name is replaced with a pointer to a prior occurance
-of the same name.
-
-The pointer takes the form of a two octet sequence:
-
-    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-    | 1  1|                OFFSET                   |
-    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-
-The first two bits are ones.  This allows a pointer to be distinguished
-from a label, since the label must begin with two zero bits because
-labels are restricted to 63 octets or less.  (The 10 and 01 combinations
-are reserved for future use.)  The OFFSET field specifies an offset from
-the start of the message (i.e., the first octet of the ID field in the
-domain header).  A zero offset specifies the first byte of the ID field,
-etc.
-
-The compression scheme allows a domain name in a message to be
-represented as either:
-
-   - a sequence of labels ending in a zero octet
-
-   - a pointer
-
-   - a sequence of labels ending with a pointer
-
-Pointers can only be used for occurances of a domain name where the
-format is not class specific.  If this were not the case, a name server
-or resolver would be required to know the format of all RRs it handled.
-As yet, there are no such cases, but they may occur in future RDATA
-formats.
-
-If a domain name is contained in a part of the message subject to a
-length field (such as the RDATA section of an RR), and compression is
-used, the length of the compressed name is used in the length
-calculation, rather than the length of the expanded name.
-
-Programs are free to avoid using pointers in messages they generate,
-although this will reduce datagram capacity, and may cause truncation.
-However all programs are required to understand arriving messages that
-contain pointers.
-
-Each label is represented as a one octet length field followed by that
-number of octets. Since every domain name ends with the null label of
-the root, a domain name is terminated by a length byte of zero.  The
-high order two bits of every length octet must be zero, and the
-remaining six bits of the length field limit the label to 63 octets or
-less.
- */
-#[derive(Debug, PartialEq)]
-struct CompressedDomain {
-    labels: Vec<String>,
-    pointer: Option<u16>,
-}
-
-impl CompressedDomain {
-    pub fn read_from(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedDomain> {
-        let mut domain = CompressedDomain {
-            labels: Vec::new(),
-            pointer: Option::None,
-        };
-        let mut total_len = 0usize;
-
-        loop {
-            let octet = cursor.read_u8()?;
-            total_len += 1;
-
-            // Upper two bits of first octect are used as a type tag
-            match octet & 0b1100_0000 {
-                0b1100_0000 => {
-                    // 14 bit offset pointer to a label somewhere else in the message.
-                    // Consists of lower six bits of the octect plus the following octect
-                    // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-                    // | 1  1|                OFFSET                   |
-                    // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-                    let upper_byte = octet & 0b0011_1111;
-                    let lower_byte = cursor.read_u8()?;
-                    let offset = (upper_byte as u16) << 8 | lower_byte as u16;
-
-                    domain.pointer = Some(offset);
-                    return Ok(domain);
-                }
-                0b1000_0000 => todo!("invalid label type 10"),
-                0b0100_0000 => todo!("invalid label type 01"),
-                0b0000_0000 => {
-                    // Label where first octect is the label's length
-                    let len = octet.into();
-
-                    if len == 0 {
-                        return Ok(domain);
-                    }
-
-                    total_len += len;
-
-                    if total_len > 255 {
-                        todo!("Total label length is too long")
-                    }
-
-                    let pointed = CompressedDomain::read_label_content(cursor, len)?;
-
-                    domain.labels.push(String::from(pointed));
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    pub fn uncompress(&self, cursor: &Cursor<&[u8]>) -> io::Result<String> {
-        let domain = self.labels.join(".");
-
-        if let Some(offset) = self.pointer {
-            let mut cursor = cursor.clone();
-            cursor.set_position(offset.into());
-
-            // TODO prevent recursion
-            let compressed = CompressedDomain::read_from(&mut cursor)?;
-            let uncompressed = compressed.uncompress(&cursor)?;
-            if domain.is_empty() {
-                Ok(uncompressed)
-            } else {
-                Ok(format!("{domain}.{uncompressed}"))
-            }
-        } else {
-            Ok(domain)
-        }
-    }
-
-    fn read_label_content(cursor: &mut Cursor<&[u8]>, len: usize) -> io::Result<String> {
-        // labels are restricted to 63 octets or less
-        debug_assert!(len <= 63);
-
-        let mut buf = [0u8; 63];
-        cursor.read_exact(&mut buf[0..len])?;
-        let bytes = &buf[0..len];
-
-        Ok(String::from(std::str::from_utf8(bytes).unwrap()))
-    }
-}
-
-fn write_name<B: BufMut>(name: &str, buf: &mut B) {
-    // todo assert!(!name.is_empty());
-
-    if !name.is_empty() {
-        for label in name.split(".") {
-            let bytes = label.as_bytes();
-
-            assert!(!bytes.is_empty());
-            assert!(bytes.len() <= 63);
-
-            buf.put_u8(bytes.len() as u8);
-            buf.put_slice(bytes);
-        }
-    }
-
-    buf.put_u8(0);
-}
-
-/*
 
     +---------------------+
     |        Header       |
     +---------------------+
-    |       Question      | the question for the name server
+    |       Question      | The question for the name server
     +---------------------+
-    |        Answer       | RRs answering the question
+    |        Answer       | Records answering the question
     +---------------------+
-    |      Authority      | RRs pointing toward an authority
+    |      Authority      | Records pointing toward an authority
     +---------------------+
-    |      Additional     | RRs holding additional information
+    |      Additional     | Records holding additional information
     +---------------------+
 */
 #[derive(Clone, Debug, PartialEq)]
@@ -1074,6 +903,177 @@ impl Record {
 
         Ok(())
     }
+}
+
+/*
+https://datatracker.ietf.org/doc/html/rfc1035#section-3.1
+
+3.1. Name space definitions
+
+<domain-name> is a domain name represented as a series of labels, and
+terminated by a label with zero length.  <character-string> is a single
+length octet followed by that number of characters.  <character-string>
+is treated as binary information, and can be up to 256 characters in
+length (including the length octet).
+
+In order to reduce the size of messages, the domain system utilizes a
+compression scheme which eliminates the repetition of domain names in a
+message.  In this scheme, an entire domain name or a list of labels at
+the end of a domain name is replaced with a pointer to a prior occurance
+of the same name.
+
+The pointer takes the form of a two octet sequence:
+
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    | 1  1|                OFFSET                   |
+    +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+The first two bits are ones.  This allows a pointer to be distinguished
+from a label, since the label must begin with two zero bits because
+labels are restricted to 63 octets or less.  (The 10 and 01 combinations
+are reserved for future use.)  The OFFSET field specifies an offset from
+the start of the message (i.e., the first octet of the ID field in the
+domain header).  A zero offset specifies the first byte of the ID field,
+etc.
+
+The compression scheme allows a domain name in a message to be
+represented as either:
+
+   - a sequence of labels ending in a zero octet
+
+   - a pointer
+
+   - a sequence of labels ending with a pointer
+
+Pointers can only be used for occurances of a domain name where the
+format is not class specific.  If this were not the case, a name server
+or resolver would be required to know the format of all RRs it handled.
+As yet, there are no such cases, but they may occur in future RDATA
+formats.
+
+If a domain name is contained in a part of the message subject to a
+length field (such as the RDATA section of an RR), and compression is
+used, the length of the compressed name is used in the length
+calculation, rather than the length of the expanded name.
+
+Programs are free to avoid using pointers in messages they generate,
+although this will reduce datagram capacity, and may cause truncation.
+However all programs are required to understand arriving messages that
+contain pointers.
+
+Each label is represented as a one octet length field followed by that
+number of octets. Since every domain name ends with the null label of
+the root, a domain name is terminated by a length byte of zero.  The
+high order two bits of every length octet must be zero, and the
+remaining six bits of the length field limit the label to 63 octets or
+less.
+ */
+#[derive(Debug, PartialEq)]
+struct CompressedDomain {
+    labels: Vec<String>,
+    pointer: Option<u16>,
+}
+
+impl CompressedDomain {
+    pub fn read_from(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedDomain> {
+        let mut domain = CompressedDomain {
+            labels: Vec::new(),
+            pointer: Option::None,
+        };
+        let mut total_len = 0usize;
+
+        loop {
+            let octet = cursor.read_u8()?;
+            total_len += 1;
+
+            // Upper two bits of first octect are used as a type tag
+            match octet & 0b1100_0000 {
+                0b1100_0000 => {
+                    // 14 bit offset pointer to a label somewhere else in the message.
+                    // Consists of lower six bits of the octect plus the following octect
+                    // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+                    // | 1  1|                OFFSET                   |
+                    // +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+                    let upper_byte = octet & 0b0011_1111;
+                    let lower_byte = cursor.read_u8()?;
+                    let offset = (upper_byte as u16) << 8 | lower_byte as u16;
+
+                    domain.pointer = Some(offset);
+                    return Ok(domain);
+                }
+                0b1000_0000 => todo!("invalid label type 10"),
+                0b0100_0000 => todo!("invalid label type 01"),
+                0b0000_0000 => {
+                    // Label where first octect is the label's length
+                    let len = octet.into();
+
+                    if len == 0 {
+                        return Ok(domain);
+                    }
+
+                    total_len += len;
+
+                    if total_len > 255 {
+                        todo!("Total label length is too long")
+                    }
+
+                    let pointed = CompressedDomain::read_label_content(cursor, len)?;
+
+                    domain.labels.push(String::from(pointed));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    pub fn uncompress(&self, cursor: &Cursor<&[u8]>) -> io::Result<String> {
+        let domain = self.labels.join(".");
+
+        if let Some(offset) = self.pointer {
+            let mut cursor = cursor.clone();
+            cursor.set_position(offset.into());
+
+            // TODO prevent recursion
+            let compressed = CompressedDomain::read_from(&mut cursor)?;
+            let uncompressed = compressed.uncompress(&cursor)?;
+            if domain.is_empty() {
+                Ok(uncompressed)
+            } else {
+                Ok(format!("{domain}.{uncompressed}"))
+            }
+        } else {
+            Ok(domain)
+        }
+    }
+
+    fn read_label_content(cursor: &mut Cursor<&[u8]>, len: usize) -> io::Result<String> {
+        // labels are restricted to 63 octets or less
+        debug_assert!(len <= 63);
+
+        let mut buf = [0u8; 63];
+        cursor.read_exact(&mut buf[0..len])?;
+        let bytes = &buf[0..len];
+
+        Ok(String::from(std::str::from_utf8(bytes).unwrap()))
+    }
+}
+
+fn write_name<B: BufMut>(name: &str, buf: &mut B) {
+    // todo assert!(!name.is_empty());
+
+    if !name.is_empty() {
+        for label in name.split(".") {
+            let bytes = label.as_bytes();
+
+            assert!(!bytes.is_empty());
+            assert!(bytes.len() <= 63);
+
+            buf.put_u8(bytes.len() as u8);
+            buf.put_slice(bytes);
+        }
+    }
+
+    buf.put_u8(0);
 }
 
 #[cfg(test)]

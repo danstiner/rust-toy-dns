@@ -18,12 +18,12 @@ pub use self::stub::StubResolver as Stub;
 pub use self::timeout::Timeout;
 
 /// A resolver takes queries and answers them. This can take many forms
-/// from proxing requests to a remote recursive server to reading a fixed
-/// set of record from a local file. From the caller's perspective what
-/// the resolver does is not relevant, only the returned answer matters.
+/// such as recursively resolving the query starting with the root nameservers
+/// to forwarding the query to a remote recursive server to reading a fixed
+/// set of records from a local file. From the caller's perspective how
+/// the resolver works is not relevant, only the returned answer matters.
 ///
 /// A common resolver pattern is to forward requests with a look-aside cache:
-///
 ///               Local                        |  Remote
 ///                                            |
 ///  +--------+           +----------+         |  +--------+
@@ -39,7 +39,6 @@ pub use self::timeout::Timeout;
 ///                       +----------+         |
 ///                       |  cache   |         |
 ///                       +----------+         |
-///
 #[async_trait]
 pub trait Resolver {
     async fn query(&self, question: Question) -> Result<Response, ResolveError>;
@@ -76,7 +75,7 @@ impl<R: Resolver + Send + Sync> Resolver for Arc<R> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
     pub code: ResponseCode,
-    pub answers: Vec<Record>,
+    pub answer: Vec<Record>,
     pub authority: Vec<Record>,
     pub additional: Vec<Record>,
     pub origin: Option<SocketAddr>,
