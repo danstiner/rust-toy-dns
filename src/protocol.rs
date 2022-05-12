@@ -357,7 +357,7 @@ impl Packet {
 #[bits = 4]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ResponseCode {
-    NoErrorCondition = 0,
+    NoError = 0,
     FormatError = 1,
     ServerFailure = 2,
     NameError = 3,
@@ -455,7 +455,7 @@ impl Header {
             recursion_desired: false,
             recursion_available: false,
             z: 0,
-            response_code: ResponseCode::NoErrorCondition,
+            response_code: ResponseCode::NoError,
             question_count: 0,
             answer_count: 0,
             authority_count: 0,
@@ -915,16 +915,16 @@ impl Record {
         }
     }
 
-    pub fn reduce_ttl(&mut self, seconds: u32) {
+    pub fn set_ttl(&mut self, new_ttl: u32) {
         match self {
-            Record::A { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::NS { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::CNAME { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::SOA { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::PTR { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::OPT { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::AAAA { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
-            Record::TXT { ttl, .. } => *ttl = ttl.saturating_sub(seconds),
+            Record::A { ttl, .. } => *ttl = new_ttl,
+            Record::NS { ttl, .. } => *ttl = new_ttl,
+            Record::CNAME { ttl, .. } => *ttl = new_ttl,
+            Record::SOA { ttl, .. } => *ttl = new_ttl,
+            Record::PTR { ttl, .. } => *ttl = new_ttl,
+            Record::OPT { ttl, .. } => *ttl = new_ttl,
+            Record::AAAA { ttl, .. } => *ttl = new_ttl,
+            Record::TXT { ttl, .. } => *ttl = new_ttl,
         }
     }
 
@@ -1531,7 +1531,7 @@ mod tests {
             recursion_desired: true,
             recursion_available: false,
             z: 2,
-            response_code: ResponseCode::NoErrorCondition,
+            response_code: ResponseCode::NoError,
             question_count: 1,
             answer_count: 0,
             authority_count: 0,
@@ -1683,7 +1683,7 @@ mod properties {
     impl Arbitrary for ResponseCode {
         fn arbitrary(g: &mut Gen) -> ResponseCode {
             match gen_range(g, 0, 6) {
-                0 => ResponseCode::NoErrorCondition,
+                0 => ResponseCode::NoError,
                 1 => ResponseCode::FormatError,
                 2 => ResponseCode::ServerFailure,
                 3 => ResponseCode::NameError,
@@ -1730,7 +1730,7 @@ mod properties {
                 recursion_desired: bool::arbitrary(g),
                 recursion_available: bool::arbitrary(g),
                 z: 0,
-                response_code: ResponseCode::NoErrorCondition,
+                response_code: ResponseCode::NoError,
                 question_count: gen_range_u16(g, 0, 2),
                 answer_count: gen_range_u16(g, 0, 6),
                 authority_count: 0,

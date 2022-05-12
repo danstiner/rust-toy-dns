@@ -1,3 +1,4 @@
+mod hide_ttl;
 mod inflight_limit;
 mod response_cache;
 mod special;
@@ -7,6 +8,7 @@ use crate::protocol::*;
 use async_trait::async_trait;
 use std::{io, net::SocketAddr, sync::Arc};
 
+pub use self::hide_ttl::HideTtl;
 pub use self::inflight_limit::InflightLimitResolver as InflightLimit;
 pub use self::response_cache::ResponseCache;
 pub use self::special::SpecialResolver as Special;
@@ -59,7 +61,7 @@ impl<R: Resolver + Send + Sync> Resolver for Arc<R> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Response {
     pub code: ResponseCode,
     pub answers: Vec<Record>,
@@ -70,7 +72,7 @@ pub struct Response {
 
 impl Response {
     pub const EMPTY: Response = Response {
-        code: ResponseCode::NoErrorCondition,
+        code: ResponseCode::NoError,
         answers: vec![],
         authority: vec![],
         additional: vec![],

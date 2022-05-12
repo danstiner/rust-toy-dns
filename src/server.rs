@@ -64,6 +64,9 @@ where
                 origin.ip()
             );
 
+            // TODO support ANY
+            assert_eq!(question.qclass, QuestionClass::IN);
+
             question
         };
 

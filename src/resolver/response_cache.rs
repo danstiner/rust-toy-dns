@@ -5,7 +5,8 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 use tracing::{info, warn};
 
 // Prevent excessively long TTLs, as suggested in RFC 1035 we limit to one week
@@ -16,14 +17,12 @@ const MAX_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 // protocol we ignore such values and use a TTL of zero instead.
 const UNREASONABLE_TTL: Duration = Duration::from_secs(1_000_000_000);
 
-// TODO
 const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(1 * 60);
 
 /// Resolver that caches responses to queries and uses that cache when feasible
 pub struct ResponseCache<R> {
     cache: Mutex<Cache>,
     inner: R,
-    hide_ttl_on_response: bool,
 }
 
 impl<R> ResponseCache<R> {
@@ -31,8 +30,26 @@ impl<R> ResponseCache<R> {
         Self {
             cache: Mutex::new(Cache::new(capacity)),
             inner: resolver,
-            hide_ttl_on_response: false,
         }
+    }
+
+    fn update_response_ttls(&self, entry: &CacheEntry, now: Instant) -> Response {
+        let mut response = entry.response.clone();
+
+        let age = now.saturating_duration_since(entry.inserted_at);
+        let age_sec = age.as_secs().try_into().unwrap_or(u32::MAX);
+
+        for r in &mut response.answers {
+            r.set_ttl(r.ttl().saturating_sub(age_sec));
+        }
+        for r in &mut response.authority {
+            r.set_ttl(r.ttl().saturating_sub(age_sec));
+        }
+        for r in &mut response.additional {
+            r.set_ttl(r.ttl().saturating_sub(age_sec));
+        }
+
+        response
     }
 }
 
@@ -40,11 +57,12 @@ impl<R> ResponseCache<R> {
 impl<R: Resolver + Send + Sync> Resolver for ResponseCache<R> {
     async fn query(&self, question: Question) -> io::Result<Response> {
         let key = CacheKey::new(&question.clone());
+        let now = Instant::now();
 
         // Check for potential cache entries
-        if let Some(response) = self.cache.lock().get(key.clone()) {
+        if let Some(entry) = self.cache.lock().get(key.clone(), now) {
             info!("Cached response");
-            return Ok(response);
+            return Ok(self.update_response_ttls(entry, now));
         }
 
         // If no valid cache entry was found, delegate to the inner resolver
@@ -56,7 +74,7 @@ impl<R: Resolver + Send + Sync> Resolver for ResponseCache<R> {
         // TODO check if (!roots_same(t1,control)) { i = j; continue; }
         self.cache.lock().put(key, &response);
 
-        return Ok(response);
+        Ok(response)
     }
 }
 
@@ -77,13 +95,13 @@ impl Cache {
         }
     }
 
-    fn get(&mut self, key: CacheKey) -> Option<Response> {
+    fn get(&mut self, key: CacheKey, now: Instant) -> Option<&CacheEntry> {
         if let Entry::Occupied(o) = self.data.entry(key) {
-            if o.get().is_expired() {
+            if o.get().is_expired(now) {
                 o.remove();
                 None
             } else {
-                Some(o.get().prepare_response())
+                Some(o.into_mut())
             }
         } else {
             None
@@ -138,7 +156,7 @@ struct CacheEntry {
 impl CacheEntry {
     fn new(response: Response) -> Self {
         let now = Instant::now();
-        let min_ttl = Self::min_ttl(&response);
+        let min_ttl = Self::ttl(&response);
         let expires_at = now + min_ttl;
         Self {
             expires_at,
@@ -147,29 +165,11 @@ impl CacheEntry {
         }
     }
 
-    fn is_expired(&self) -> bool {
-        let now = Instant::now();
+    fn is_expired(&self, now: Instant) -> bool {
         self.expires_at <= now
     }
 
-    fn prepare_response(&self) -> Response {
-        let mut response = self.response.clone();
-
-        let age = Instant::now() - self.inserted_at;
-        let age_sec = age.as_secs().try_into().unwrap();
-
-        for a in &mut response.answers {
-            // if hide_ttl_on_response {
-            //     a.set_ttl(0);
-            // } else {
-            a.reduce_ttl(age_sec);
-            // }
-        }
-
-        response
-    }
-
-    fn min_ttl(response: &Response) -> Duration {
+    fn ttl(response: &Response) -> Duration {
         let all_records = response
             .answers
             .iter()
@@ -204,8 +204,76 @@ impl Ord for CacheExpiration {
         other.expires_at.cmp(&self.expires_at)
     }
 }
+
 impl PartialOrd for CacheExpiration {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    fn mock_response() -> Response {
+        Response {
+            code: ResponseCode::NoError,
+            answers: vec![Record::A {
+                name: "example.com".to_string(),
+                class: 1,
+                ttl: 300,
+                address: Ipv4Addr::new(93, 184, 216, 34),
+            }],
+            authority: vec![],
+            additional: vec![],
+            origin: None,
+        }
+    }
+
+    struct MockResolver {
+        response: Response,
+        query_count: Mutex<usize>,
+    }
+
+    impl MockResolver {
+        fn new(response: Response) -> Self {
+            Self {
+                response,
+                query_count: Mutex::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Resolver for &MockResolver {
+        async fn query(&self, _question: Question) -> io::Result<Response> {
+            *self.query_count.lock() += 1;
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_behavioral_test() {
+        tokio::time::pause();
+        let mock = MockResolver::new(mock_response());
+        let resolver = ResponseCache::new(&mock, 1);
+
+        // Initial query will not be cached
+        let response = resolver.lookup_ip4("example.com").await.unwrap();
+        assert_eq!(*mock.query_count.lock(), 1);
+        assert_eq!(response, mock.response);
+
+        // Subsequent queries should be served from cache and not trigger a query on the inner resolver
+        let response = resolver.lookup_ip4("example.com").await.unwrap();
+        assert_eq!(*mock.query_count.lock(), 1);
+        assert_eq!(response, mock.response);
+
+        // After advancing time past the cache expiration, the next query should trigger a query on the inner resolver
+        tokio::time::advance(Duration::from_secs(300)).await;
+        let response = resolver.lookup_ip4("example.com").await.unwrap();
+        assert_eq!(*mock.query_count.lock(), 2);
+        assert_eq!(response, mock.response);
     }
 }

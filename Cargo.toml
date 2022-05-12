@@ -24,6 +24,7 @@ base64 = "0.13"
 criterion = { version = "0.3", features = ["async_tokio"] }
 quickcheck = "1"
 quickcheck_macros = "1"
+tokio = { version = "1.17.0", features = ["test-util"] }
 
 [[bench]]
 name = "async_calls"

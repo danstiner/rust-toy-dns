@@ -50,14 +50,14 @@ If multiple clients share a caching DNS server, they can both time responses for
 Mitigation:
 
 - Optionally zero out TTL values on responses
-- Ignore non-recurive queries to caching server
+- Ignore non-recursive queries to caching server
 
 ### Other Attacks
 
 Mitigation:
 
-- Separated DNS server and recursive resolver functionality (DNS servers and recursive resolvers should never run on the same )
-- No TCP support for now, it has additional issues where it is easy to cache poison because only the first packet in multi-packet responses include the transaction ID
+- Separated DNS server and recursive resolver functionality (DNS servers and recursive resolvers should never run on the same IP address)
+- No TCP support for now, it is relatively easy to cache poison because only the first packet in multi-packet responses include the transaction ID
 - Only IN and ANY question classes are allowed for implementation simplicity
 
 ### On DNSSEC
@@ -66,26 +66,17 @@ A set of security extensions introduced in 1997 that have failed to reach wide a
 
 ## TODO
 
-- [X] Factor out resolver trait and test, for adding more than just a non-caching proxy resolver
-- [X] Factor out server struct and test
-- [X] Caching proxy resolver
-- [X] Fix cached ttls
-- [X] Drop requests over concurrency limit instead of waiting for lock
 - [ ] Cache negative responses
 - [ ] Truncate to-long responses (and set TC bit)
 - [ ] Support for extended UDP responses
-- [ ] Support common record types (PTR, SOA)
-- [ ] Increase incoming UDP socket buffer size (similar to socket_tryreservein, something like 128KB is enough)
 - [ ] Response compression & better packet cursor - https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.4
 - [ ] Fuzz testing
 - [ ] Benchmarking
 - [ ] Initialize from from resolver.conf etc
+- [ ] Increase incoming UDP socket buffer size (similar to socket_tryreservein, something like 128KB is enough)
 - [ ] Recursive resolver (note http://cr.yp.to/djbdns/separation.html)
+- [ ] DNSCrypt, DNS over TLS, or DNS over HTTPS support
 - [ ] TODO: Use cryptographic generator to select ports instead of relying on Linux's behavior of finding an open port when binding to port zero. There are two main issues with Linux's behavior. First, older kernels have a "trivially predictable" prandom_u32 implementation used to select a port. Newer kernels utilize SipHash which is a "PITA" to guess, but still not cryptographically secure. Second, Linux selects from a relatively small set of source ports. Specifically it prefers to use odd ports for outgoing connections, and only from the configured empheral port range (net.ipv4.ip_local_port_range) which is usually 32768-60999. That's effectively one quarter of the available ports, meaning instead of 16 bits of security against cache poisoning we get under 14 bits, a relatively small but still meaningful difference.
-
-2022-05-05T16:01:16.762355Z  INFO rust_dns::server: Query mobile.events.data.microsoft.com A from 172.17.0.1
-thread 'tokio-runtime-worker' panicked at 'called `Result::unwrap()` on an `Err` value: Utf8Error { valid_up_to: 39, error_len: Some(1) }', src/protocol.rs:768:61
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ## Notes
 
@@ -94,6 +85,7 @@ Inspired by https://github.com/EmilHernvall/dnsguide.
 Written with reference to:
 
 - http://cr.yp.to/djbdns.html
+- https://wizardzines.com/zines/dns/
 - [RFC 1123](https://datatracker.ietf.org/doc/html/rfc1123#section-6) - Requirements for Internet Hosts - SUPPORT SERVICES - DOMAIN NAME TRANSLATION
 - [RFC 1034](https://datatracker.ietf.org/doc/html/rfc1034) - DOMAIN NAMES - CONCEPTS AND FACILITIES
 - [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035) - DOMAIN NAMES - IMPLEMENTATION AND SPECIFICATION

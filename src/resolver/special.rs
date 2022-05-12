@@ -59,7 +59,7 @@ impl<R: Resolver + Send + Sync> Resolver for SpecialResolver<R> {
 
 fn special_response(record: Record) -> Response {
     Response {
-        code: ResponseCode::NoErrorCondition,
+        code: ResponseCode::NoError,
         answers: vec![record],
         authority: vec![],
         additional: vec![],
