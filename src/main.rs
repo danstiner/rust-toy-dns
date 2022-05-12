@@ -3,7 +3,7 @@ mod resolver;
 mod server;
 
 use server::Server;
-use std::{env, error::Error, sync::Arc};
+use std::{env, error::Error, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use tracing::info;
 
@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(&listen_addr).await?;
     let resolver = resolver::Stub::new(&remote_addr)?;
     let resolver = resolver::ResponseCache::new(resolver, 1000);
+    let resolver = resolver::Timeout::new(resolver, Duration::from_secs(10));
     let resolver = resolver::Special::new(resolver);
     let resolver = resolver::InflightLimit::new(resolver, 200);
     let resolver = Arc::new(resolver);

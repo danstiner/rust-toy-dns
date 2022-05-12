@@ -3,6 +3,7 @@ mod inflight_limit;
 mod response_cache;
 mod special;
 mod stub;
+mod timeout;
 
 use crate::protocol::*;
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ pub use self::inflight_limit::InflightLimitResolver as InflightLimit;
 pub use self::response_cache::ResponseCache;
 pub use self::special::SpecialResolver as Special;
 pub use self::stub::StubResolver as Stub;
+pub use self::timeout::Timeout;
 
 /// A resolver takes queries and answers them. This can take many forms
 /// from proxing requests to a remote recursive server to reading a fixed

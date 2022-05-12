@@ -4,8 +4,6 @@ use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::UdpSocket, time::timeout};
 use tracing::{info, trace};
 
-const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub struct Server<R>(Arc<Inner<R>>);
 
 impl<R> Server<R>
@@ -70,9 +68,7 @@ where
             question
         };
 
-        let query = self.resolver.query(question.clone());
-        let query = timeout(QUERY_TIMEOUT, query);
-        let response: Response = query.await.unwrap().unwrap();
+        let response: Response = self.resolver.query(question.clone()).await.unwrap();
 
         let mut packet = Packet::new();
         packet.set_id(request.id());
