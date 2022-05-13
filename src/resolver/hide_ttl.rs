@@ -30,3 +30,53 @@ impl<R: Resolver + Send + Sync> Resolver for HideTtl<R> {
         Ok(response)
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    struct MockResolver {
+        response: Response,
+    }
+
+    impl MockResolver {
+        fn new() -> Self {
+            Self {
+                response: Response {
+                    code: ResponseCode::NoError,
+                    answer: vec![Record::A {
+                        name: "example.com".to_string(),
+                        class: 1,
+                        ttl: 300,
+                        address: Ipv4Addr::new(93, 184, 216, 34),
+                    }],
+                    authority: vec![],
+                    additional: vec![],
+                    origin: None,
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Resolver for &MockResolver {
+        async fn query(&self, _question: Question) -> Result<Response, ResolveError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn ttls_are_set_to_zero() {
+        let mock = MockResolver::new();
+        let resolver = HideTtl::new(&mock);
+        let mut expected_response = mock.response.clone();
+        expected_response.answer.get_mut(0).unwrap().set_ttl(0);
+
+        let response = resolver.lookup_ip4("example.com").await.unwrap();
+
+        assert_eq!(response, expected_response);
+    }
+}

@@ -66,3 +66,123 @@ fn special_response(record: Record) -> Response {
         origin: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    struct MockResolver {
+        response: Response,
+    }
+
+    impl MockResolver {
+        fn new() -> Self {
+            Self {
+                response: Response {
+                    code: ResponseCode::NoError,
+                    answer: vec![],
+                    authority: vec![],
+                    additional: vec![],
+                    origin: None,
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Resolver for &MockResolver {
+        async fn query(&self, _question: Question) -> Result<Response, ResolveError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn non_special_queries_pass_through() {
+        let mock = MockResolver::new();
+        let resolver = Special::new(&mock);
+
+        let response = resolver.lookup_ip4("example.com").await.unwrap();
+
+        assert_eq!(response, mock.response);
+    }
+
+    #[tokio::test]
+    async fn localhost_a_is_127_0_0_1() {
+        let mock = MockResolver::new();
+        let resolver = Special::new(&mock);
+
+        let response = resolver.lookup_ip4("localhost").await.unwrap();
+
+        assert_eq!(
+            response,
+            Response {
+                code: ResponseCode::NoError,
+                answer: vec![Record::A {
+                    name: "localhost".to_string(),
+                    class: QuestionClass::IN as u16,
+                    ttl: SPECIAL_TTL,
+                    address: Ipv4Addr::new(127, 0, 0, 1),
+                }],
+                authority: vec![],
+                additional: vec![],
+                origin: None,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn in_addr_1_0_0_127_ptr_is_localhost() {
+        let mock = MockResolver::new();
+        let resolver = Special::new(&mock);
+
+        let response = resolver
+            .query(Question {
+                domain: "1.0.0.127.in-addr.arpa".to_owned(),
+                qtype: QuestionType::PTR,
+                qclass: QuestionClass::IN,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response,
+            Response {
+                code: ResponseCode::NoError,
+                answer: vec![Record::PTR {
+                    name: "1.0.0.127.in-addr.arpa".to_string(),
+                    class: QuestionClass::IN as u16,
+                    ttl: SPECIAL_TTL,
+                    ptrdname: "localhost".to_string(),
+                }],
+                authority: vec![],
+                additional: vec![],
+                origin: None,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn ipv4_a_is_addr() {
+        let mock = MockResolver::new();
+        let resolver = Special::new(&mock);
+
+        let response = resolver.lookup_ip4("192.48.96.2").await.unwrap();
+
+        assert_eq!(
+            response,
+            Response {
+                code: ResponseCode::NoError,
+                answer: vec![Record::A {
+                    name: "192.48.96.2".to_string(),
+                    class: QuestionClass::IN as u16,
+                    ttl: SPECIAL_TTL,
+                    address: Ipv4Addr::new(192, 48, 96, 2),
+                }],
+                authority: vec![],
+                additional: vec![],
+                origin: None,
+            },
+        );
+    }
+}

@@ -216,30 +216,26 @@ mod tests {
 
     use super::*;
 
-    fn mock_response() -> Response {
-        Response {
-            code: ResponseCode::NoError,
-            answer: vec![Record::A {
-                name: "example.com".to_string(),
-                class: 1,
-                ttl: 300,
-                address: Ipv4Addr::new(93, 184, 216, 34),
-            }],
-            authority: vec![],
-            additional: vec![],
-            origin: None,
-        }
-    }
-
     struct MockResolver {
         response: Response,
         query_count: Mutex<usize>,
     }
 
     impl MockResolver {
-        fn new(response: Response) -> Self {
+        fn new() -> Self {
             Self {
-                response,
+                response: Response {
+                    code: ResponseCode::NoError,
+                    answer: vec![Record::A {
+                        name: "example.com".to_string(),
+                        class: 1,
+                        ttl: 300,
+                        address: Ipv4Addr::new(93, 184, 216, 34),
+                    }],
+                    authority: vec![],
+                    additional: vec![],
+                    origin: None,
+                },
                 query_count: Mutex::new(0),
             }
         }
@@ -255,7 +251,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn cache_behavioral_test() {
-        let mock = MockResolver::new(mock_response());
+        let mock = MockResolver::new();
         let resolver = ResponseCache::new(&mock, 1);
 
         // Initial query will not be cached
