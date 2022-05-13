@@ -72,6 +72,7 @@ where
                     .await
             }
             Err(ResolveError::Dropped) => (),
+            Err(ResolveError::Timeout) => (), // TODO send timeout response
             Err(ResolveError::Io(err)) => {
                 warn!(?err, "Error resolving query");
             }
@@ -88,15 +89,15 @@ where
         packet.set_id(id);
         packet.set_response_code(response.code);
         packet.add_question(question);
-        for answer in response.answer {
+        for r in response.answer {
             info!(
                 "Answer {} {} {:?} from {:?}",
-                answer.name(),
-                answer.ttl(),
-                answer.rtype(),
+                r.name(),
+                r.ttl(),
+                r.rtype(),
                 response.origin,
             );
-            packet.add_answer(answer);
+            packet.add_answer(r);
         }
         for r in response.authority {
             info!(

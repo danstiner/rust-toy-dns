@@ -253,9 +253,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cache_behavioral_test() {
-        tokio::time::pause();
         let mock = MockResolver::new(mock_response());
         let resolver = ResponseCache::new(&mock, 1);
 

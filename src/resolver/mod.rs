@@ -87,4 +87,6 @@ pub enum ResolveError {
     Io(#[from] io::Error),
     #[error("query was dropped")]
     Dropped,
+    #[error("query timed out")]
+    Timeout,
 }
